@@ -1068,6 +1068,17 @@ tr.is-link:hover .chev { opacity: 1; transform: translateX(2px); }
 .field-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
 .field-control { display: flex; align-items: center; justify-content: flex-end; min-width: 0; }
 .field-static { font-size: 13px; color: var(--ink-2); }
+
+/* 内联图片（form 块里 type: 'image'）：二维码这类，白底是必须的 —— 
+   深色主题下二维码没白底会扫不出来 */
+.field-image {
+  max-width: 180px;
+  max-height: 180px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 6px;
+}
 .field-row.is-locked .field-control { opacity: 0.72; }
 
 /* 脏行只做轻微底色：整行高亮会盖住"锁定"的灰色语义 */

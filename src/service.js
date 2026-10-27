@@ -299,6 +299,71 @@ export class QdashNeoService {
     }
 
     /**
+     * 分享卡片。
+     *
+     * **插件只表达意图**（"这是一条 B 站视频"），组卡、签名、降级全在内核 ——
+     * 因为卡片签名只有 OneBot 实现算得出来，插件不该碰协议，也不该为了
+     * 一个卡片去拿 `client`。
+     *
+     * 两种实现，对插件是同一个接口：
+     *
+     *   - 实现支持 `get_mini_app_ark`（SnowLuma）→ 生成带签名的卡片段
+     *   - 不支持（NapCat / Lagrange / 自建）→ **降级成纯文本**，标题 + 链接
+     *
+     * 两条路都走 `enqueueOut` / `enqueueSegmentsOut`，所以限流、落库、
+     * 死信重试全都照常 —— 这是它和"给插件一个 client 后门"的根本区别。
+     */
+    this.card = {
+      /**
+       * @param {{ chatKey?: string, kind?: string, title?: string, desc?: string,
+       *           cover?: string, url?: string }} opts
+       * @returns {Promise<{ ok: boolean, mode: 'card'|'text' }>}
+       */
+      async share({ chatKey, kind = 'bili', title = '', desc = '', cover = '', url = '' } = {}) {
+        const key = String(chatKey ?? '').trim()
+        if (!key) throw new Error('card.share 需要 chatKey')
+
+        const head = String(title ?? '').trim()
+        const body = String(desc ?? '').trim()
+        const pic = String(cover ?? '').trim()
+        const link = String(url ?? '').trim()
+        if (!link) throw new Error('card.share 需要 url')
+
+        /** 落库给人看的标签：卡片本身读不出文字，界面上要有个东西认 */
+        const label = `[${kind}] ${head || link}`
+
+        try {
+          const r = await this.client.call('get_mini_app_ark', {
+            type: String(kind),
+            title: head,
+            desc: body,
+            picUrl: pic,
+            jumpUrl: link,
+          })
+          const ark = r?.data?.data
+          if (ark) {
+            this.enqueueSegmentsOut(
+              key,
+              [{ type: 'json', data: { data: JSON.stringify(ark) } }],
+              { text: label, fromTool: 'card' },
+            )
+            return { ok: true, mode: 'card' }
+          }
+        } catch (err) {
+          /**
+           * 换实现、没这个 action、签名失败 —— 都走降级。
+           *
+           * **不能因此失败**：卡片是锦上添花，链接才是内容。
+           */
+          this.log('info', `qdash-neo: 卡片不可用，降级为文本 ${key} msg=${err?.message}`)
+        }
+
+        this.enqueueOut(key, [head, body, link].filter(Boolean).join('\n'), { fromTool: 'card' })
+        return { ok: true, mode: 'text' }
+      },
+    }
+
+    /**
      * 插件可订阅的内核事件（只读旁听）。
      *
      * 门面只暴露 `on()`，不暴露 `emit()` —— 发事件是内核的事。
@@ -327,6 +392,13 @@ export class QdashNeoService {
       'voice-send': true,
       'voice-hook': true,
       'judge-provider': true,
+      /**
+       * 插件能发分享卡片（`card.share`）。
+       *
+       * 厂商支持就发真卡片（带签名），不支持自动降级纯文本。
+       * 走队列，和普通消息共享限流与重试。
+       */
+      card: true,
       /**
        * 插件能往系统提示里加一段常驻引导（`instructions.register`）。
        *
@@ -902,6 +974,13 @@ export class QdashNeoService {
           memory: this.memoryOf() ?? null,
           // `qq_get_image(file:"latest")` 用它兜底：模型常常不知道具体是哪张图
           lastImageFile: () => this.lastImage.get(chatKey) ?? '',
+          /**
+           * 发分享卡片（`qq_send_card` 工具用）。
+           *
+           * 走的是这里而不是给工具一个 `client`：卡片要签名，而签名只有
+           * OneBot 实现算得出来；实现不支持时 `card.share` 自己降级成纯文本。
+           */
+          card: this.card,
           /**
            * `qq_send_message({ reply_to })` 的校验：这个 ID 是不是真在本轮的批里。
            *

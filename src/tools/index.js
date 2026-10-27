@@ -182,6 +182,15 @@ export function createQqTools({
    * @type {((id: string) => boolean)|null}
    */
   canReply = null,
+  /**
+   * 分享卡片（`qq_send_card` 用），就是 `service.card`。
+   *
+   * **为 null 时不注册这个工具** —— 老内核没有这个能力，
+   * 挂上去只会让模型点了报错。
+   *
+   * @type {{ share: Function }|null}
+   */
+  card = null,
   config = {},
   log = () => {},
 }) {
@@ -498,6 +507,44 @@ export function createQqTools({
     enqueueSegments(chatKey, segments, { fromTool: 'qq_send_segment', ...meta })
     sent.count += 1
     return { ok: true, queued: true }
+  }
+
+  /**
+   * 分享卡片。
+   *
+   * 比光贴链接显眼，点开直接跳小程序/网页。**但卡片里只有标题和封面**，
+   * 正文文案读不到 —— 想说的话得另外发一条。这条要写进 description，
+   * 否则模型会把"评价"塞进 card 里，结果群里只看到一张没有态度的卡片。
+   *
+   * 实现不支持卡片时，`card.share` 自己降级成纯文本（标题 + 链接），
+   * **所以调用它不会失败**。
+   */
+  if (card) {
+    tool(
+      'qq_send_card',
+      '发一张分享卡片（B 站视频这类）。点开能直接跳，比光贴链接显眼。' +
+        '**卡片里只有标题和封面，正文读不到** —— 想说什么另外用 qq_send_message 发一条。' +
+        '只有真值得分享时才用，别把它当链接生成器。',
+      {
+        kind: '卡片类型：bili（B 站视频）或 weibo',
+        title: '标题',
+        desc: '可选：一句话描述，显示在标题下面',
+        cover: '可选：封面图地址',
+        url: '要跳转的链接，必填',
+      },
+      async args => {
+        const url = String(args?.url ?? '').trim()
+        if (!url) throw new Error('url 不能为空（卡片点开总得有地方去）')
+        return card.share({
+          chatKey,
+          kind: String(args?.kind ?? 'bili').trim() || 'bili',
+          title: String(args?.title ?? '').trim(),
+          desc: String(args?.desc ?? '').trim(),
+          cover: String(args?.cover ?? '').trim(),
+          url,
+        })
+      },
+    )
   }
 
   /**

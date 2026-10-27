@@ -149,6 +149,33 @@ export const QQ_TOOLS = [
     params: { name: '语音库里的文件名，如 hi.mp3' },
     sideEffect: true,
   },
+  /**
+   * **必须同时出现在这里和 `createQqTools` 里。**
+   *
+   * 目录决定白名单（`applyToolPolicy` 用它算 `allow`），注册决定实现。
+   * 只注册不登记 → guard 直接拒：「工具不在白名单」。
+   * 只登记不注册 → 启动时 warn「白名单里有 N 项未注册」。
+   *
+   * 这个坑很隐蔽：工具明明注册成功了，模型也看得见（在 tool 清单里），
+   * 一调用就被拦，而报错说"去控制台勾选" —— 可控制台里根本没有这一项可勾。
+   */
+  {
+    name: 'qq_send_card',
+    group: 'write',
+    action: 'send',
+    title: '发卡片',
+    description:
+      '发一张分享卡片（B 站视频这类），点开直接跳转。' +
+      '**卡片里只有标题和封面，正文读不到** —— 想说的话另外发一条。',
+    params: {
+      url: '要跳转的链接（必填）',
+      title: '标题',
+      desc: '可选：一句话描述',
+      cover: '可选：封面图地址',
+      kind: '卡片类型：bili（默认）或 weibo',
+    },
+    sideEffect: true,
+  },
   {
     name: 'qq_voice_list',
     group: 'read',

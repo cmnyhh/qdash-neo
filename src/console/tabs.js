@@ -230,6 +230,38 @@ export class TabRegistry {
         }
 
         /**
+         * `image`：内联图片（二维码这类）。
+         *
+         * **只接受 `data:image/…;base64,`**，不接受 http(s) URL ——
+         * 图片控件会把值直接塞进 `<img src>`，放开外链等于让插件能命令
+         * 控制台去请求任意地址（探内网、打追踪像素），而这个是浏览器自动发的，
+         * 用户点都不会点。
+         *
+         * 400KB 上限：base64 之后约 300KB 原图，二维码远远够。
+         */
+        if (out.type === 'image') {
+          const v = String(out.value ?? '')
+          /**
+           * **空值是合法的**：表示"暂时没有图片"（比如二维码还没生成）。
+           *
+           * 早先这里没放空值，结果插件注册选项卡时直接抛 TabError ——
+           * 而那个错误发生在 `apply` 里，**整个插件都不加载**，
+           * 日志里只有一行 TabError，看不出是"还没生成二维码"。
+           */
+          /**
+           * 允许 `svg+xml`：二维码这类**纯几何图形**用 SVG 生成最省事 ——
+           * 不需要 PNG 编码（zlib + CRC + 分块），插件里带一个 50KB 的
+           * QR 库就能本地画出来，不必求第三方转图服务（境内还经常连不上）。
+           */
+          if (v && !/^data:image\/(png|jpeg|gif|webp|svg\+xml);base64,/i.test(v)) {
+            fail(`${where}.fields[${i}] 的 image 值必须是 data:image/…;base64, 开头的内联图片（或空字符串）`)
+          }
+          if (v.length > 400_000) {
+            fail(`${where}.fields[${i}] 的内联图片太大（base64 ${v.length} 字符，上限 400000）`)
+          }
+        }
+
+        /**
          * `options`：下拉选项。
          *
          * **必须在这里透传**。之前只返回 path/label/type/value/description，

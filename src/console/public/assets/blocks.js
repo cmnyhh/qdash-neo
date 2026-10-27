@@ -238,7 +238,30 @@ function renderBlock(block, ctx) {
       const initial = formDrafts.has(dk) ? formDrafts.get(dk) : f.value
       let control
 
-      if (!editable) {
+      /**
+       * 内联图片（二维码、预览图这类）。
+       *
+       * **永远只读**：值必须是 `data:image/…;base64,`（后端已经校验过），
+       * 不接受外链 —— 否则插件能命令浏览器去请求任意地址。
+       */
+      if (f.type === 'image') {
+        const src = String(f.value ?? '')
+        /**
+         * **`src` 必须走 `attrs`。**
+         *
+         * `el()` 只认固定的几个字段（class / text / type / value / hidden / disabled…），
+         * 直接写 `el('img', { src })` 会创建一个**没有 src 的 `<img>`** ——
+         * 界面上什么都没有，控制台也没有任何报错，看着像"图片没生成"。
+         *
+         * 实际生成的 data URL 一直是好的（后端日志里有长度）。
+         */
+        control = src.startsWith('data:image/')
+          ? el('img', {
+              class: 'field-image',
+              attrs: { src, alt: String(f.label ?? ''), decoding: 'async' },
+            })
+          : el('span', { class: 'field-static' }, '(无图片)')
+      } else if (!editable) {
         control = el('span', { class: 'field-static' }, formatValue(f.value, f.type))
       } else if (f.type === 'boolean') {
         const box = el('input', { type: 'checkbox' })
@@ -356,11 +379,23 @@ function renderBlock(block, ctx) {
           attrs: { 'data-action': a.id },
           on: ctx.onAction
             ? {
-                click: ev => {
+                click: async ev => {
                   const btn = ev.currentTarget
                   // 含外部副作用的动作必须二次确认（04 §5.4）：这类按钮会改真实世界
                   if (a.confirm && !window.confirm(a.confirm)) return
-                  ctx.onAction(ctx.tabId, a.id, btn)
+                  const ok = await ctx.onAction(ctx.tabId, a.id, btn)
+                  /**
+                   * **动作成功后必须重绘。**
+                   *
+                   * `actions` 的结果通常不在按钮上，而在**别的块**里：
+                   * 生成二维码 → 上面那个 `image` 字段；刷新列表 → `table` 的行。
+                   * 不重绘的话用户看到的是"点了没反应" —— 插件那边已经生成好了，
+                   * 界面还挂着旧快照。
+                   *
+                   * 只对 `actions` 做，不动 `form.submit`：表单保存后输入框里的值
+                   * 本来就是用户刚填的，重绘反而会闪一下、还可能丢草稿。
+                   */
+                  if (ok) ctx.rerender?.()
                 },
               }
             : null,
