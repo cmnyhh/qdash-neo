@@ -725,7 +725,13 @@ test('提示词：系统要求拼在最前并声明优先人设（AGENTS.md 通�
     { kind: 'private', chatKey: 'u:1', userId: '1', text: '在吗', messageId: '1' },
     { systemNote: '输出控制在10字内', persona: '爱用古风口吻、喜欢铺陈' },
   )
-  assert.match(priv, /【系统要求｜优先于下面的角色设定】/)
+  /**
+   * 文案改成**不依赖相对位置**的写法。
+   *
+   * 原来是「优先于下面的角色设定」，而我调了几次顺序，那句话就指错几次
+   * （一度指着插件引导）。判据改成"优先级最高"，配合下面的位置断言一起用。
+   */
+  assert.match(priv, /【系统要求｜优先级最高/)
   assert.ok(priv.indexOf('10字内') < priv.indexOf('喜欢铺陈'), '私聊里系统要求必须排在人设前面')
 
   const grp = renderPrompt(
