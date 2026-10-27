@@ -139,6 +139,26 @@ function imageTag(ev) {
  *   `deferToAgent` 为真时追加一句"想说就调 qq_send_message"：
  *   判定层放弃决定权后，模型要清楚沉默就是"什么都不调"。
  */
+/**
+ * 发送方式。**每轮 user message 都必须带。**
+ *
+ * 早先这句写在 `speakHint` 里，而 `speakHint` 只 `canSpeak` 为真时才会被调用 ——
+ * 关掉语音（默认就是关）时，这条唯一的说明也跟着消失了。于是模型只看到
+ * 「想说话就调 qq_send_message」这类条件式措辞，理解成可选，然后默认直接输出正文。
+ *
+ * 而正文不会被发送（`onAssistant` 只落库，state=unforwarded），
+ * 表现就是"它明明回了，QQ 里什么也没有"。
+ *
+ * 放在**模块级**而不是函数里：主动发言（`proactive`）那条分支也要用，
+ * 而它出现在函数体靠前的位置 —— 定义在后面会撞 TDZ。
+ */
+const SEND_HINT =
+  '【发送方式】你的话只能通过 qq_send_message 发出去 —— 直接输出的正文不会被发送，对方看不到。'
+
+/** 私聊和群聊共用的收尾提醒：模型对结尾最敏感 */
+const REPLY_HINT =
+  '【回复方式】把要说的话放进 qq_send_message 的 text 参数里调用它。直接输出的文字不会到达对方。'
+
 export function renderPrompt(
   ev,
   {
@@ -206,6 +226,14 @@ export function renderPrompt(
     const hint = String(proactive?.hint ?? '').trim()
     return [
       timeBlock,
+      /**
+       * 主动发言这条路同样要带发送方式。
+       *
+       * 原来只有「想说话就调 qq_send_message」——和普通回合犯了同一个错：
+       * 措辞是条件式的，模型理解成可选，于是输出正文、消息静默丢弃。
+       * 而主动发言时**没有对方在等**，它连"怎么没反应"都不会收到反馈。
+       */
+      SEND_HINT,
       '【没有新消息｜这是你自己排的时间点】不是有人在叫你，也不是系统在催。' +
         '想说话就调 qq_send_message；觉得此刻没什么可说的，就什么都不做、直接结束这一轮 —— 那完全正常。' +
         '不要为了"到点了"而硬找话题。',
@@ -213,6 +241,7 @@ export function renderPrompt(
       memory,
       persona ? `【你的角色设定｜这是你本人】\n${persona}` : '',
       sysBlock,
+      REPLY_HINT,
     ]
       .filter(Boolean)
       .join('\n\n')
@@ -227,19 +256,6 @@ export function renderPrompt(
    *
    * @param {'group'|'private'} place
    */
-  /**
-   * 发送方式。**每轮 user message 都必须带，和无条件的东西绑在一起。**
-   *
-   * 早先这句写在 `speakHint` 里，而 `speakHint` 只 `canSpeak` 为真时才会被调用 ——
-   * 关掉语音（默认就是关）时，这条唯一的说明也跟着消失了。于是模型只看到
-   * 「想说话就调 qq_send_message」这类条件式措辞，理解成可选，然后默认直接输出正文。
-   *
-   * 而正文不会被发送（`onAssistant` 只落库，state=unforwarded），
-   * 表现就是"它明明回了，QQ 里什么也没有"。
-   */
-  const SEND_HINT =
-    '【发送方式】你的话只能通过 qq_send_message 发出去 —— 直接输出的正文不会被发送，对方看不到。'
-
   /**
    * 语音建议。**只提内核自己的 `qq_send_voice`。**
    *
@@ -303,7 +319,7 @@ export function renderPrompt(
        * 放在最后才像是"你现在该做什么"。这是同一约束的两处冗余，
        * 不是重复啰嗦 —— 少了任何一处都试过不生效。
        */
-      '【回复方式】把要说的话放进 qq_send_message 的 text 参数里调用它。直接输出的文字不会到达对方。',
+      REPLY_HINT,
     ]
       .filter(Boolean)
       .join('\n\n')
@@ -463,7 +479,7 @@ export function renderPrompt(
     )
   }
   // 和私聊一样，在**最后**再说一次发送方式：模型对结尾最敏感
-  parts.push('【回复方式】把要说的话放进 qq_send_message 的 text 参数里调用它。直接输出的文字不会到达对方。')
+  parts.push(REPLY_HINT)
 
   return parts.join('\n')
 }
