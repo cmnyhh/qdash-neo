@@ -162,8 +162,21 @@ export class QdashNeoService {
     this.pluginTools = new PluginToolRegistry({ log: this.log })
     /** 给插件用的门面（`ctx.qdashNeo.tools`） */
     this.tools = {
-      /** @param {object} desc 见 `PluginToolRegistry#register` */
-      register: desc => this.pluginTools.register(desc),
+      /**
+       * @param {object} desc 见 `PluginToolRegistry#register`
+       *
+       * 注册完**立刻补挂到已存在的会话**：否则只有"下一个新建的会话"能拿到它，
+       * 用户看到的是"开了 TTS，当前对话里模型还是不能用"，而唯一的解是删会话重建。
+       */
+      register: desc => {
+        const dispose = this.pluginTools.register(desc)
+        try {
+          this.syncPluginToolsToSessions()
+        } catch (err) {
+          this.log('warn', `qdash-neo: 补挂插件工具失败 msg=${err?.message}`)
+        }
+        return dispose
+      },
       list: () => this.pluginTools.list(),
       has: name => this.pluginTools.has(name),
     }
@@ -815,6 +828,41 @@ export class QdashNeoService {
       )
     }
     if (state) this.toolStates.set(chatKey, state)
+  }
+
+  /**
+   * 把插件注册的工具补挂到**所有已建立的会话**上。
+   *
+   * 插件工具原本只在建会话时挂载，于是"改配置前就建好的会话"永远拿不到新工具 ——
+   * 用户看到的是"开了 TTS，当前对话里模型还是不能用"，而唯一的解是删掉会话重建。
+   * 那个流程反直觉，也没人会想到。
+   *
+   * 幂等：已挂过的由 `attachPluginTool` 短路，重复调用不抛错、不刷日志。
+   *
+   * @returns {number} 实际补挂了几处（一个工具×一个会话算一处）
+   */
+  syncPluginToolsToSessions() {
+    const defs = this.pluginTools?.defs?.() ?? []
+    if (!defs.length || this.toolStates.size === 0) return 0
+
+    const blocked = new Set((this.config?.tools?.disabledPlugins ?? []).map(String))
+    let attached = 0
+
+    for (const state of this.toolStates.values()) {
+      if (typeof state?.attachPluginTool !== 'function') continue
+      for (const d of defs) {
+        if (blocked.has(String(d.owner ?? ''))) continue
+        if (state.attachPluginTool(d)) attached += 1
+      }
+    }
+
+    if (attached > 0) {
+      this.log(
+        'info',
+        `qdash-neo: 已把插件工具补挂到 ${this.toolStates.size} 个会话（共 ${attached} 处）`,
+      )
+    }
+    return attached
   }
 
   /**

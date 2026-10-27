@@ -211,3 +211,28 @@ test('插件工具：disabledPlugins 为空时全部照常挂载', () => {
   })
   assert.ok(tools.registered.some(d => d.name === 'x'))
 })
+
+test('插件工具：可补挂到已存在的会话（不用删会话重建）', () => {
+  const tools = fakeTools()
+  const reg = mkReg()
+  // 先建会话：此刻插件还没注册任何工具
+  const state = applyToolPolicy(tools, {
+    chatKey: 'g:1',
+    config: { tools: { enabled: true }, policy: {} },
+    deps: {},
+    pluginTools: reg,
+  })
+  const before = tools.registered.length
+
+  // 会话建好之后插件才注册（TTS 开关打开就是这个时序）
+  reg.register({ name: 'late_tool', description: 'x', owner: 'p', execute: async () => ({}) })
+
+  assert.equal(state.attachPluginTool(reg.defs()[0]), true, '应该挂得上')
+  assert.equal(tools.registered.length, before + 1)
+  assert.ok(
+    tools.allow.includes('late_tool'),
+    '补挂时也要并进白名单 —— 只注册不并就是「注册成功、调用被拒」',
+  )
+
+  assert.equal(state.attachPluginTool(reg.defs()[0]), false, '重复补挂要短路，不能抛错')
+})

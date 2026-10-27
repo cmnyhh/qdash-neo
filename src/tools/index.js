@@ -886,6 +886,36 @@ export function applyToolPolicy(
      * 只能从建过会话的 agent 里取。这里回传给 `service.toolStates` 供控制台汇总。
      */
     available,
+
+    /**
+     * 把插件工具**补挂到已存在的会话**上。
+     *
+     * 为什么需要：插件工具原本只在建会话时挂载，于是"改配置前就建好的会话"
+     * 永远拿不到新工具。用户看到的是"开了 TTS，当前对话里模型还是不能用"，
+     * 而唯一的解是删掉会话重建 —— 反直觉，且没人会想到。
+     *
+     * 两件事都要做：`register` 与**并进 `allow`**。`guard` 是正面白名单，
+     * 只注册不并的话会「注册成功、调用被拒」，而日志只在调用那一刻出现。
+     *
+     * @param {object} d 归一化后的工具定义（`PluginToolRegistry.defs()` 的一项）
+     * @returns {boolean} 是否真的挂上了
+     */
+    attachPluginTool(d) {
+      const name = String(d?.name ?? '').trim()
+      if (!name) return false
+      // 已经挂过就直接返回：补挂是幂等的，重复 register 只会抛"已存在"并刷日志
+      if (allow.includes(name) || created.defs.some(k => k.name === name)) return false
+      if (isDenied(name)) return false
+      try {
+        tools.register(d)
+      } catch (err) {
+        log('warn', `qdash-neo: 补挂插件工具 ${name} 失败 msg=${err?.message}`)
+        return false
+      }
+      allow.push(name)
+      return true
+    },
+
     /** 本回合已经通过工具发过几条 */
     get sentCount() {
       return created.sent.count
