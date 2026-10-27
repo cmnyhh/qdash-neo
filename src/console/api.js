@@ -560,11 +560,26 @@ export function toolsCatalog({ service }) {
     else external.push(name)
   }
 
+  /**
+   * 插件注册的工具。
+   *
+   * **直接读注册表，不走 `toolStates`。** 后者是建会话时的快照，插件新注册的工具
+   * 要等下一次建会话才进得去，而控制台每次刷新读的都是它 ——
+   * 表现是"插件说它注册了工具，但目录里永远没有"。
+   * 注册表是内存 Map，读到的就是当下状态。
+   */
+  const plugins = (service?.pluginTools?.list?.() ?? []).map(t => ({
+    name: String(t.name ?? ''),
+    owner: String(t.owner ?? ''),
+    description: String(t.description ?? ''),
+  }))
+
   return {
     ok: true,
     // 根作用域有没有 tools 服务：没有的话前端只能手填
     ready: Boolean(tools && typeof tools.schemas === 'function'),
     qq,
+    plugins,
     // 记忆工具：只在记忆开着时才真的挂上（关掉时给空数组，前端据此不显示）
     memory: service?.config?.memory?.enabled === true ? MEMORY_TOOLS : [],
     internal,

@@ -1654,6 +1654,40 @@ function renderToolsPane(group, rerender) {
     )
   }
 
+  /**
+   * 2.4 插件注册的工具。
+   *
+   * 数据来自注册表（实时），不是建会话时的 `toolStates` 快照 ——
+   * 后者要等下一次建会话才更新，表现为"插件说注册了，目录里永远没有"。
+   */
+  if (data?.plugins?.length) {
+    body.push(
+      el('div', { class: 'persona-section' }, [
+        el('div', { class: 'persona-head' }, [
+          el('span', { class: 'persona-title', text: '插件工具' }),
+          el('span', { class: 'persona-count', text: `${data.plugins.length} 个` }),
+        ]),
+        el(
+          'div',
+          { class: 'tool-chips' },
+          data.plugins.map(t =>
+            toolChip({
+              label: t.name,
+              hint: t.owner ? `来自 ${t.owner}` : '',
+              on: true,
+              disabled: true,
+              onClick: () => {},
+            }),
+          ),
+        ),
+        el('p', {
+          class: 'panel-sub',
+          text: '插件工具在建立会话时挂到模型上；刚注册的要新开一次对话才生效。',
+        }),
+      ]),
+    )
+  }
+
   // 2.5 记忆工具：只在 memory.enabled 时才会有内容
   if (data?.memory?.length) {
     body.push(
