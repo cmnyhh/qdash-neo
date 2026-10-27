@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light" />
+  <title>首次设置 · qdash-neo</title>
+  <link rel="icon" href="assets/brand-mark.png" type="image/png" />
+  <link rel="stylesheet" href="assets/theme.css" />
+</head>
+<body class="login-body">
+  <main class="login-shell">
+    <div class="login-card">
+      <div class="login-brand">
+        <img class="login-logo" src="assets/brand-logo.png" alt="qdash-neo" width="88" />
+      </div>
+
+      <h1 class="login-title">首次设置</h1>
+      <p class="login-sub">这台 qdash-neo 还没有控制台口令。请自行设定一个，之后用它登录。</p>
+
+      <form id="setup-form" class="login-form" autocomplete="off">
+        <label class="login-field">
+          <span class="login-label">口令（至少 8 位）</span>
+          <input id="setup-password" class="input login-input" type="password"
+                 autocomplete="new-password" minlength="8" required autofocus />
+        </label>
+        <label class="login-field">
+          <span class="login-label">再输一次</span>
+          <input id="setup-confirm" class="input login-input" type="password"
+                 autocomplete="new-password" minlength="8" required />
+        </label>
+
+        <p id="setup-error" class="login-error" role="alert" aria-live="polite" hidden></p>
+
+        <button id="setup-submit" class="btn btn-primary login-submit" type="submit">保存并进入</button>
+      </form>
+
+      <p class="login-hint">口令只存在本机数据库里；忘了只能清掉 <code>console:password</code> 重来。</p>
+    </div>
+  </main>
+
+  <script type="module" src="assets/setup.js"></script>
+</body>
+</html>

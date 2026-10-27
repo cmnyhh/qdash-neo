@@ -1035,3 +1035,27 @@ test('登录限流：反代场景按 X-Forwarded-For 区分来源，不互相连
     h.dispose?.()
   }
 })
+
+test('首次设置页：样式与脚本走独立文件（内联会被 CSP 挡掉）', async () => {
+  const h = await harness({ consoleConfig: { password: '' } })
+  try {
+    const page = await h.request('/qdash-neo/setup')
+    assert.equal(page.status, 200)
+
+    /**
+     * 控制台 CSP 是 `script-src 'self'; style-src 'self'`，内联的 <style> / <script>
+     * 会被浏览器直接拒绝。表现是「页面没有任何样式、按钮点了没反应」，
+     * 而服务端日志里一切正常 —— 第一版就是这么写坏的。
+     */
+    assert.doesNotMatch(page.text, /<style[\s>]/i, '内联样式会被 CSP 拒绝')
+    assert.doesNotMatch(page.text, /<script(?![^>]*\ssrc=)/i, '内联脚本会被 CSP 拒绝')
+    assert.match(page.text, /assets\/theme\.css/, '样式要走外部文件')
+    assert.match(page.text, /assets\/setup\.js/, '脚本要走外部文件')
+
+    // 两个资源必须免鉴权可读：否则页面能开、样式脚本 302，看起来像"页面坏了"
+    assert.equal((await h.request('/qdash-neo/assets/theme.css')).status, 200)
+    assert.equal((await h.request('/qdash-neo/assets/setup.js')).status, 200)
+  } finally {
+    h.dispose?.()
+  }
+})

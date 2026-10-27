@@ -52,9 +52,11 @@ const STATIC = {
   '': 'index.html',
   'index.html': 'index.html',
   'login.html': 'login.html',
+  'setup.html': 'setup.html',
   'assets/app.js': 'assets/app.js',
   'assets/blocks.js': 'assets/blocks.js',
   'assets/login.js': 'assets/login.js',
+  'assets/setup.js': 'assets/setup.js',
   'assets/theme.css': 'assets/theme.css',
   // brand-mark：抠掉背景后的图形方版（侧栏 + favicon）；brand-logo：完整图形 + 词标（登录页）
   'assets/brand-mark.png': 'assets/brand-mark.png',
@@ -65,6 +67,9 @@ const STATIC = {
 const PUBLIC_STATIC = new Set([
   'login.html',
   'assets/login.js',
+  // 首次设置页与登录页同构：都是免鉴权的独立静态文件
+  'setup.html',
+  'assets/setup.js',
   'assets/theme.css',
   'assets/brand-mark.png',
   'assets/brand-logo.png',
@@ -74,85 +79,6 @@ const PUBLIC_STATIC = new Set([
 const MAX_BODY_BYTES = 64 * 1024
 
 const TAB_ACTION_RE = /^\/api\/tabs\/([^/]+)\/actions\/([^/]+)$/
-
-/**
- * 首次设置页。
- *
- * 内联而不是放进 `public/`：它只在「口令还没设过」这一种状态下出现一次，
- * 为它加一个静态文件、再改 `isPublicStatic` 白名单，反而多两处要同步的地方。
- *
- * 表单提交走 `api/setup`（相对路径），所以挂载点改前缀时这里不用跟着改。
- */
-const SETUP_HTML = `<!doctype html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>首次设置 · qdash-neo</title>
-<style>
-  :root { color-scheme: light dark; }
-  body { font: 15px/1.6 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
-         display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0;
-         background: #f6f7f9; color: #1a1a1a; }
-  @media (prefers-color-scheme: dark) { body { background: #14161a; color: #e6e6e6; } }
-  form { width: min(420px, 92vw); padding: 28px; border-radius: 12px; background: #fff;
-         box-shadow: 0 2px 16px rgb(0 0 0 / 8%); }
-  @media (prefers-color-scheme: dark) { form { background: #1e2126; box-shadow: none; } }
-  h1 { font-size: 19px; margin: 0 0 6px; }
-  p.hint { margin: 0 0 18px; color: #666; font-size: 13px; }
-  @media (prefers-color-scheme: dark) { p.hint { color: #999; } }
-  label { display: block; font-size: 13px; margin: 14px 0 6px; color: #444; }
-  @media (prefers-color-scheme: dark) { label { color: #bbb; } }
-  input { width: 100%; box-sizing: border-box; padding: 9px 11px; border-radius: 8px;
-          border: 1px solid #d0d4da; font-size: 15px; background: transparent; color: inherit; }
-  @media (prefers-color-scheme: dark) { input { border-color: #333a44; } }
-  button { width: 100%; margin-top: 20px; padding: 11px; border: 0; border-radius: 8px;
-           background: #2c6ef2; color: #fff; font-size: 15px; cursor: pointer; }
-  button:disabled { opacity: .6; cursor: default; }
-  #err { min-height: 20px; margin: 10px 0 0; color: #d33; font-size: 13px; }
-</style>
-</head>
-<body>
-<form id="f" autocomplete="off">
-  <h1>首次设置</h1>
-  <p class="hint">这台 qdash-neo 还没有控制台口令。请自行设定一个，之后用它登录。</p>
-
-  <label for="p">口令（至少 ${MIN_PASSWORD_LEN} 位）</label>
-  <input id="p" type="password" minlength="${MIN_PASSWORD_LEN}" required autofocus>
-
-  <label for="c">再输一次</label>
-  <input id="c" type="password" minlength="${MIN_PASSWORD_LEN}" required>
-
-  <button id="b" type="submit">保存并进入</button>
-  <p id="err" role="alert"></p>
-</form>
-<script>
-  var f = document.getElementById('f'), b = document.getElementById('b'), e = document.getElementById('err')
-  f.addEventListener('submit', async function (ev) {
-    ev.preventDefault()
-    e.textContent = ''
-    var p = document.getElementById('p').value
-    var c = document.getElementById('c').value
-    if (p !== c) { e.textContent = '两次输入不一致'; return }
-    if (p.length < ${MIN_PASSWORD_LEN}) { e.textContent = '口令太短'; return }
-    b.disabled = true
-    try {
-      var r = await fetch('api/setup', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ password: p }),
-      })
-      var j = await r.json().catch(function () { return {} })
-      if (r.ok) { location.replace(j.redirect || 'login'); return }
-      e.textContent = (j.error && j.error.message) || ('设置失败（HTTP ' + r.status + '）')
-    } catch (err) {
-      e.textContent = '连不上服务，检查一下宿主是否还在运行'
-    }
-    b.disabled = false
-  })
-</script>
-</body>
-</html>`
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -598,11 +524,14 @@ export class ConsoleServer {
       this.#json(res, 405, { ok: false, error: { code: 'method-not-allowed', message: '设置页只接受 GET' } })
       return
     }
-    res.statusCode = 200
-    res.setHeader('Content-Type', 'text/html; charset=utf-8')
-    res.setHeader('Cache-Control', 'no-store')
-    res.setHeader('X-Content-Type-Options', 'nosniff')
-    res.end(SETUP_HTML)
+    /**
+     * 走静态文件，**不内联**。
+     *
+     * 控制台 CSP 是 `script-src 'self'; style-src 'self'`，内联的 `<style>` 与 `<script>`
+     * 会被直接拒绝。第一版把整页内联在常量里，结果页面没有任何样式、按钮也没有反应 ——
+     * 浏览器控制台里只有 CSP 违规提示，从服务端完全看不出问题。
+     */
+    this.#serveStatic(req, res, '/setup.html', method)
   }
 
   /**
