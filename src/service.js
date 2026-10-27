@@ -29,6 +29,8 @@ import { syncInstructions } from './session/instructions.js'
 import { applyToolPolicy, parseChatKey } from './tools/index.js'
 import { SessionRouter } from './session/router.js'
 import { Store } from './store/db.js'
+import { appendFileSync } from 'node:fs'
+
 import { PluginEvents } from './plugin/events.js'
 import { PluginOutbox } from './plugin/outbox.js'
 import { PluginSettings } from './plugin/settings.js'
@@ -921,6 +923,8 @@ export class QdashNeoService {
       failure = err
       throw err
     } finally {
+      // 一轮结束才清零：`sentCount` 是只读的，靠这里复位，否则下一轮会误判成"已经发过"
+      this.toolStates.get(ev.chatKey)?.resetSent?.()
       this.pluginEvents.emit('turn/end', {
         kind,
         chatKey: ev.chatKey,
@@ -1921,11 +1925,31 @@ export class QdashNeoService {
    */
   onAssistant(chatKey, text) {
     /**
-     * 本回合已经通过工具发过消息。
+     * 本回合已经通过工具发过几条。
      *
-     * 工具是唯一出口，这里只负责计数，不再有"自动转发"跟它抢。
+     * **只读，不清零**：一轮里模型可能产生多段正文（调工具前后各一段），
+     * 读走即清零会让后面的段落误判成"没调过工具"，于是堆一串 unforwarded。
+     * 复位交给回合结束时的 `resetSent`。
      */
-    const viaTool = this.toolStates.get(chatKey)?.consumeSent?.() ?? 0
+    const viaTool = this.toolStates.get(chatKey)?.sentCount?.() ?? 0
+
+    /**
+     * 临时诊断：这一轮到底有没有调工具、工具白名单里有什么。
+     *
+     * `this.log()` 的输出在 DSH 里看不到（info 被吞），只能写文件。
+     * 关键是 `allow`：里面有 `qq_send_message` 说明模型看得见却没调；
+     * 没有则是压根没挂上 —— 那种情况下改多少遍提示词都没用。
+     */
+    try {
+      const st = this.toolStates.get(chatKey)
+      appendFileSync(
+        '/tmp/qdash-assistant.log',
+        `${new Date().toISOString()} chat=${chatKey} viaTool=${viaTool} ` +
+          `allow=${JSON.stringify(st?.available ?? [])} textLen=${String(text ?? '').length}\n`,
+      )
+    } catch {
+      /* 诊断失败不该影响正常流程 */
+    }
     if (viaTool > 0) {
       this.stats.replied += viaTool
       this.log('info', `qdash-neo: 本回合经工具发送 ${viaTool} 条 ${chatKey}`)
@@ -1935,6 +1959,38 @@ export class QdashNeoService {
     const body = String(text ?? '').trim()
     if (!body) return
 
+    /**
+     * 收尾标记：模型按约定在工具调用后输出 `[[END]]`。
+     *
+     * 走到这里说明**本轮没调过工具** —— 否则上面 `viaTool > 0` 已经 return 了。
+     * 所以这个标记出现在这里只有一种可能：它以为自己发了，其实没发。
+     *
+     * 不落库（`[[END]]` 本身没有信息量），但记一条 warn —— 这是"它以为发了
+     * 其实没发"的唯一线索，不记就彻底静默了。
+     */
+    // 用它**包含**判断而不是相等：模型常写成「[[END]]（把茶盖推了过去）」
+    if (/\[\[END\]\]/i.test(body)) {
+      this.stats.withheld += 1
+      this.log('warn', `qdash-neo: 模型只输出了收尾标记、没有调发送工具 ${chatKey}`)
+      return
+    }
+
+    /**
+     * 只落库，不发送。
+     *
+     * **不要改成"兜底补发"。** 试过，会发出垃圾：
+     *
+     *   [正文] User just sighs "哎". Respond with... via qq_send_message. Text: "（把茶推过去）…"
+     *   [工具] qq_send_message → ok
+     *   [正文] （把茶盖推了过去）
+     *
+     * 第一段出现在工具调用**之前**，那一刻 `viaTool` 还是 0，兜底会把整段英文
+     * 元描述当成消息发出去。而工具调用之后那段由上面 `viaTool > 0` 拦掉 ——
+     * 那个是对的，那是自言自语，不该发。
+     *
+     * 也就是说：模型在调用前后都会产生正文，**前后都不该发**。
+     * 判断"这一轮到底调没调工具"只能在 `turn/end` 做，不能逐段判。
+     */
     this.stats.withheld += 1
     try {
       this.safeInsert({
@@ -1947,7 +2003,6 @@ export class QdashNeoService {
     } catch (err) {
       this.log('warn', `qdash-neo: 未发送内容落库失败 ${chatKey} name=${err?.name} msg=${err?.message}`)
     }
-    this.log('info', `qdash-neo: 未调发送工具，正文不发出 ${chatKey} 长度=${body.length}`)
   }
 
   onUsage(chatKey, usage) {

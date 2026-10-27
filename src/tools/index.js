@@ -967,15 +967,25 @@ export function applyToolPolicy(
       return created.sent.count
     },
     /**
-     * 读走"本回合发过几条"并清零。
+     * 本回合已经通过工具发过几条。**只读，不清零。**
      *
-     * 出站侧用它判断要不要跳过自动转发：模型很可能既输出正文、又调工具发消息，
-     * 不跳就是同一句话发两遍。取走即清零，避免下一回合被误判。
+     * 早先是 `consumeSent()`，读完就清零。那在"一轮只有一段正文"时没问题，
+     * 但 agent loop 里模型经常产生**多段**文本：调工具前想一句、调完再想一句。
+     *
+     *   [正文] 我该怎么说…      ← 读到 0，落库
+     *   [工具] qq_send_message   ← 真正发出去
+     *   [正文] 好了，说完了      ← 计数已被上一段消费掉，又读到 0，落库
+     *
+     * 结果是控制台里堆一串 `unforwarded`，看着像"漏发"，而它其实只是模型的思考。
+     * 清零改到回合结束（`resetSent`），一轮之内所有正文都能看到真实计数。
      */
-    consumeSent() {
-      const n = created.sent.count
+    sentCount() {
+      return created.sent.count
+    },
+
+    /** 回合结束时清零，避免下一轮被误判 */
+    resetSent() {
       created.sent.count = 0
-      return n
     },
     dispose: () => {
       for (const fn of disposers.reverse()) {

@@ -131,19 +131,31 @@ test('语音库：describe 暴露给控制台的信息齐全（样例插件靠�
 
 /* ---------------- 提示词：两种发语音的方式 ---------------- */
 
-test('提示词：语音开启时提到 qq_send_voice 与 qq_speak，关闭时完全不提', () => {
+test('提示词：语音开启时只提内核自己的 qq_send_voice，且不该提插件的 qq_speak', () => {
   const g = { kind: 'group', chatKey: 'g:1', groupId: '1', senderName: '甲', userId: '1', messageId: '1', text: '在吗' }
   const on = renderPrompt(g, { canSpeak: true })
   assert.match(on, /【说话方式】/)
   assert.match(on, /qq_send_voice/, '发语音库里现成音频的入口要写清楚')
-  assert.match(on, /qq_speak/, '插件提供"开口说"时也要提一句')
+
+  /**
+   * **不能提 `qq_speak`。** 那是插件注册的工具，内核不知道它叫什么、在不在。
+   * 早先写成「如果工具清单里有 qq_speak，也可以…」—— 等于让模型去猜一个
+   * 内核根本不掌握的事实。合成类工具的用法由插件自己的 description 说明。
+   */
+  assert.doesNotMatch(on, /qq_speak/, '内核不该教模型用插件的工具')
+
   assert.match(on, /晚安/, '要给具体场面；只说"少用语音"它会完全不碰')
   assert.match(on, /打字/, '默认倾向必须写清楚是打字')
   assert.doesNotMatch(renderPrompt(g), /【说话方式】/, '语音关着还提，等于让它去调一个不存在的工具')
 
+  // 发送方式**无条件**写：它跟 canSpeak 无关
+  assert.match(renderPrompt(g), /\[\[END\]\]/, '关掉语音时发送约定仍然要在')
+  assert.match(renderPrompt(g), /qq_send_message/)
+
   const p = { kind: 'private', chatKey: 'u:1', userId: '1', messageId: '2', text: '在吗' }
   assert.match(renderPrompt(p, { canSpeak: true }), /【说话方式】/)
   assert.doesNotMatch(renderPrompt(p), /【说话方式】/)
+  assert.match(renderPrompt(p), /\[\[END\]\]/)
 })
 
 /* ---------------- 出站钩子 ---------------- */

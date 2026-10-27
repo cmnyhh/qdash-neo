@@ -1634,15 +1634,30 @@ test('管理员名单：只认 tools.adminOwners，留空就是没人能踢（fa
   }
 })
 
-/* ---------------- 正文不自动转发 ---------------- */
+/* ---------------- 没调工具时的兜底 ---------------- */
 
-test('正文不自动转发：没调发送工具就不发，落库 unforwarded 并计数', () => {
+test('没调工具：正文只落库，不发送', () => {
   const s = makeService()
   try {
     const chatKey = `g:${GROUP_ID}`
     const sent = attachOutbox(s)
-    s.service.onAssistant(chatKey, '这句话不该发到群里')
-    assert.equal(sent.length, 0, 'tool 模式不能自动转发')
+    s.service.onAssistant(chatKey, '这句话模型没走工具')
+
+    /**
+     * **不要改成兜底补发**，试过，会把垃圾发出去。
+     *
+     * 实测模型的一轮里会有两段正文：
+     *
+     *   [正文] User just sighs "哎". Respond with... via qq_send_message. Text: "…"
+     *   [工具] qq_send_message → ok
+     *   [正文] （把茶盖推了过去）
+     *
+     * 第一段在工具调用**之前**，那时 viaTool 还是 0 —— 兜底会把整段英文元描述
+     * 当成消息发给对方。第二段由 viaTool > 0 拦掉，那个是对的。
+     *
+     * 判断"这一轮到底调没调工具"只能在 turn/end 做，不能逐段判。
+     */
+    assert.equal(sent.length, 0, '不能兜底补发：调用前的正文可能是模型复述的指令')
     assert.equal(s.service.stats.withheld, 1, '要能看出它说了但没发')
     const rows = s.store.listMessages(chatKey, { direction: 'out' })
     assert.equal(rows.length, 1)
@@ -1657,12 +1672,14 @@ test('本回合调过发送工具 → 正文不再重复发一遍', () => {
   try {
     const chatKey = `g:${GROUP_ID}`
     const sent = attachOutbox(s)
-    let taken = 0
+    /**
+     * 现在是**只读** `sentCount`（不再读走即清零）。
+     *
+     * 一轮里模型可能产生多段正文（调工具前后各一段），清零会让后面的段落
+     * 误判成"没调过工具"，于是堆一串 unforwarded —— 看着像漏发。
+     */
     s.service.toolStates.set(chatKey, {
-      consumeSent: () => {
-        taken += 1
-        return taken === 1 ? 1 : 0
-      },
+      sentCount: () => 1,
     })
     s.service.onAssistant(chatKey, '这段正文不该再发一遍')
     assert.equal(sent.length, 0, '工具已发过，正文不能再发一次')
