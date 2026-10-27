@@ -17,7 +17,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 /** 插件名规则：小写字母开头，只允许 a-z0-9_，最长 32。挡住空格、冒号、引号、SQL 片段 */
-const NS_RE = /^[a-z][a-z0-9_]{0,31}$/
+const NS_RE = /^[a-z][a-z0-9_-]{0,31}$/
 
 /** 子目录名：允许点号（`mp3` / `tmp.d` 这类），但不允许出现 `/` */
 const SUB_RE = /^[A-Za-z0-9_.-]{1,64}$/

@@ -225,3 +225,15 @@ test('插件目录：子目录不能跳出，名字必须合法', () => {
   assert.throws(() => st.dir('Todo'), /不合法/, '名字不转小写，大写要报错')
   assert.throws(() => st.dir('a;drop'), /不合法/)
 })
+
+test('命名空间：允许连字符（插件作者会自然用包名）', () => {
+  const st = new PluginStorage({ getStore: () => null })
+  // 包名 `qdash-neo-plugin-voice` 去掉 scope 就是这个形状，以前会被拒
+  const db = st.forFeature('qdash-neo-plugin-voice')
+  assert.ok(db)
+
+  // 该拒的还是要拒
+  for (const bad of ['A', 'a b', 'a;drop', 'a/b', 'a:b', '']) {
+    assert.throws(() => st.forFeature(bad), /不合法/, `「${bad}」应该被拒`)
+  }
+})

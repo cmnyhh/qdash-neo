@@ -12,7 +12,7 @@
  */
 
 /** 插件名规则，和 storage / settings 保持一致 */
-const NS_RE = /^[a-z][a-z0-9_]{0,31}$/
+const NS_RE = /^[a-z][a-z0-9_-]{0,31}$/
 
 export class PluginOutbox {
   /**
