@@ -1,10 +1,15 @@
 <p align="center">
-  <img src="src/console/public/assets/brand-logo.png" alt="qdash-neo" width="112">
+  <img src="src/console/public/assets/brand-logo.png" alt="qdash-neo" width="200">
 </p>
 
 <h1 align="center">qdash-neo</h1>
 
 <p align="center">将 QQ 群聊与私聊接入 DSH 的聊天机器人插件</p>
+
+<p align="center">
+  官方插件：<a href="https://github.com/cmnyhh/qdash-neo-plugins">qdash-neo-plugins</a>
+  （语音 TTS、插件开发规范）
+</p>
 
 本项目不是独立的机器人框架，而是 [DSH](https://github.com/deepseek-ai/dsh) 的插件。它复用 DSH 的模型、会话、工具与权限体系：收到的 QQ 消息直接进入一次对话，回复由模型自行决定是否发出。
 
@@ -18,7 +23,7 @@
 - 角色卡：可指定人设，语气与发言频率均由角色卡定义
 - 内置控制台，修改配置无需重启宿主；首次访问时自行设定口令
 - 群管理（踢人）为可选项，按 QQ 号白名单校验，默认关闭
-- 语音：发语音库里现成的音频；装 `qdash-neo-plugin-voice` 后还能把一句话现说出来
+- 语音：发语音库里现成的音频；装 `@cmnyhh/qdash-neo-plugin-voice` 后还能把一句话现说出来
 - **可扩展**：插件能注册工具、存自己的数据、加控制台页、挂自定义判定器
 
 ## 快速开始
@@ -32,8 +37,8 @@
 ### 2. 安装
 
 ```bash
-npm i qdash-neo
-npx dsh --profile web --patch node_modules/qdash-neo/cordis.patch.yml
+npm i @cmnyhh/qdash-neo
+npx dsh --profile web --patch node_modules/@cmnyhh/qdash-neo/cordis.patch.yml
 ```
 
 > `--patch` 必须位于 `--port`、`--no-open` 等启动参数**之前**，否则会被解析为子命令选项并报错。
@@ -97,10 +102,10 @@ npx dsh --profile web --patch node_modules/qdash-neo/cordis.patch.yml
 
 **底座（主包自带）**：将音频文件（`.mp3` / `.silk`）放入 `voice.dir`（默认 `<DSH_HOME>/qdash-voice`），模型即可通过 `qq_send_voice` 发送。仅允许库内文件，并受体积与频率上限约束。
 
-**TTS（需另装插件）**：`qdash-neo-plugin-voice` 提供 `qq_speak({ text })`，将文本合成为语音。该插件仅负责产出音频文件；发送、路径校验、限流与落库仍由主包完成。
+**TTS（需另装插件）**：`@cmnyhh/qdash-neo-plugin-voice` 提供 `qq_speak({ text })`，将文本合成为语音。该插件仅负责产出音频文件；发送、路径校验、限流与落库仍由主包完成。
 
 ```bash
-npm i qdash-neo-plugin-voice
+npm i @cmnyhh/qdash-neo-plugin-voice
 ```
 
 开启后由模型**自行判断**使用文字还是语音：多数情况下使用文字；语音仅用于「一两句话即可说完、语气比字面更重要」的场合，例如道晚安、调侃、感慨。
