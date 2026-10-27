@@ -187,6 +187,21 @@ export async function createConfig() {
       grantedPlugins: Schema.array(Schema.string())
         .default([])
         .description('授予哪些插件的工具（默认空 = 一个都不授予）。在控制台「工具」页点授予，或在这里手填 owner'),
+      /**
+       * 授予哪些插件的**提示词引导**。
+       *
+       * 和 `grantedPlugins` 分开是刻意的：工具是"能做什么"，
+       * 引导是"**行为准则**"——后者能改写模型其他判断，比工具权限更敏感。
+       *
+       * 默认空 = 一个都不注入。插件注册了引导之后能在控制台看见，
+       * 但要在这里（或界面上）授权才真的进系统提示。
+       */
+      grantedInstructions: Schema.array(Schema.string())
+        .default([])
+        .description(
+          '授予哪些插件的提示词引导（默认空 = 一个都不注入）。' +
+            '这段文字会进系统提示，等于能改写行为准则，所以和工具授权分开',
+        ),
       adminOwners: Schema.array(Schema.string())
         .default([])
         .description(

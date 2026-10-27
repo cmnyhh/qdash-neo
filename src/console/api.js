@@ -377,7 +377,20 @@ export function pluginToolToggle({ service, server, body }) {
     throw new ApiError('bad-request', 'granted 必须是布尔值', 400)
   }
 
-  const current = (cs.effective()?.tools?.grantedPlugins ?? []).map(String)
+  /**
+   * `tools` = 工具授权，`instructions` = 提示词引导授权。
+   *
+   * 分开是刻意的：工具是"能做什么"，引导是**行为准则** ——
+   * 后者进系统提示后能改写模型对其他事的判断，比工具权限更敏感，
+   * 所以各自一份名单，不会"给了工具就顺带给了引导"。
+   */
+  const kind = String(body?.kind ?? 'tools').trim() || 'tools'
+  if (kind !== 'tools' && kind !== 'instructions') {
+    throw new ApiError('bad-request', 'kind 只能是 tools 或 instructions', 400)
+  }
+  const field = kind === 'instructions' ? 'grantedInstructions' : 'grantedPlugins'
+
+  const current = (cs.effective()?.tools?.[field] ?? []).map(String)
   const next = new Set(current)
   if (body.granted) next.add(owner)
   else next.delete(owner)
@@ -385,7 +398,7 @@ export function pluginToolToggle({ service, server, body }) {
   let result
   try {
     result = cs.update({
-      patch: { 'tools.grantedPlugins': [...next] },
+      patch: { [`tools.${field}`]: [...next] },
       revision: cs.revision,
       actor: String(body?.actor ?? '').trim() || 'console',
     })
@@ -396,13 +409,27 @@ export function pluginToolToggle({ service, server, body }) {
   if (result.changed.length > 0) {
     service.applyConfig(result.effective)
     server?.syncConfig?.(result.effective)
+    /**
+     * 引导名单变了要**立刻重写 `AGENTS.md`**。
+     *
+     * `applyConfig` 虽然也会走到 `applyInstructions`，但会话已经建立时
+     * 它读的是旧文件；显式再刷一次，至少让**下一个**会话拿到对的内容。
+     */
+    if (kind === 'instructions') {
+      try {
+        service.applyInstructions?.()
+      } catch {
+        /* 刷新失败不该让授权本身失败 */
+      }
+    }
   }
 
   return {
     ok: true,
     owner,
+    kind,
     granted: body.granted,
-    grantedPlugins: [...next],
+    [field]: [...next],
     revision: result.revision,
   }
 }
@@ -625,12 +652,27 @@ export function toolsCatalog({ service }) {
     description: String(t.description ?? ''),
   }))
 
+  /**
+   * 插件贡献的提示词引导。
+   *
+   * 和插件工具一样：**注册即可见、授权才生效**。区别是它进的是系统提示，
+   * 等于能改写行为准则 —— 所以授权名单是独立的（`tools.grantedInstructions`），
+   * 不复用 `tools.grantedPlugins`。
+   */
+  const instructions = (service?.pluginInstructions?.list?.() ?? []).map(it => ({
+    key: String(it.key ?? ''),
+    owner: String(it.owner ?? ''),
+    text: String(it.text ?? ''),
+  }))
+
   return {
     ok: true,
     // 根作用域有没有 tools 服务：没有的话前端只能手填
     ready: Boolean(tools && typeof tools.schemas === 'function'),
     qq,
     plugins,
+    /** 插件贡献的提示词引导（注册即可见，授权才进系统提示） */
+    instructions,
     // 记忆工具：只在记忆开着时才真的挂上（关掉时给空数组，前端据此不显示）
     memory: service?.config?.memory?.enabled === true ? MEMORY_TOOLS : [],
     internal,
@@ -647,6 +689,13 @@ export function toolsCatalog({ service }) {
       allowPluginTools: cfg.allowPluginTools !== false,
       /** 已授予的插件（按 owner）。**默认空 = 一个都不授予**，工具页按这个渲染开关 */
       grantedPlugins: (cfg.grantedPlugins ?? []).map(String),
+      /**
+       * 已授权提示词引导的插件。
+       *
+       * **和 `grantedPlugins` 分开**：工具是"能做什么"，引导是"行为准则"，
+       * 后者一旦注入就能改写模型对其他事的判断。
+       */
+      grantedInstructions: (cfg.grantedInstructions ?? []).map(String),
       internalAllow: cfg.internalAllow ?? [],
       externalAllow: cfg.externalAllow ?? [],
     },

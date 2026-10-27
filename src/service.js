@@ -34,6 +34,7 @@ import { readFile } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
 
 import { PluginEvents } from './plugin/events.js'
+import { PluginInstructions } from './plugin/instructions.js'
 import { PluginOutbox } from './plugin/outbox.js'
 import { PluginSettings } from './plugin/settings.js'
 import { PluginStorage } from './plugin/storage.js'
@@ -177,6 +178,8 @@ export class QdashNeoService {
      * 会话由内核创建，插件只是"进程里的一个东西"。
      */
     this.pluginTools = new PluginToolRegistry({ log: this.log })
+    /** 插件贡献的提示词引导（注册 ≠ 生效，要授权） */
+    this.pluginInstructions = new PluginInstructions({ log: this.log })
     /** 给插件用的门面（`ctx.qdashNeo.tools`） */
     this.tools = {
       /**
@@ -196,6 +199,28 @@ export class QdashNeoService {
       },
       list: () => this.pluginTools.list(),
       has: name => this.pluginTools.has(name),
+    }
+
+    /**
+     * 插件贡献的提示词引导。
+     *
+     * 注册完**立刻刷新一次 `AGENTS.md`**：否则引导要等下次 `applyConfig`
+     * 或重启才生效，而插件作者会以为"我注册了但模型没收到"。
+     *
+     * 注意它只是**注册**，真正进系统提示还要这个插件在
+     * `instructions.grantedInstructions` 里 —— 见 `applyInstructions`。
+     */
+    this.instructions = {
+      register: desc => {
+        const dispose = this.pluginInstructions.register(desc)
+        try {
+          this.applyInstructions()
+        } catch (err) {
+          this.log('warn', `qdash-neo: 刷新插件引导失败 msg=${err?.message}`)
+        }
+        return dispose
+      },
+      list: () => this.pluginInstructions.list(),
     }
 
     /**
@@ -302,6 +327,13 @@ export class QdashNeoService {
       'voice-send': true,
       'voice-hook': true,
       'judge-provider': true,
+      /**
+       * 插件能往系统提示里加一段常驻引导（`instructions.register`）。
+       *
+       * **注册了不等于生效**：要这个插件在 `tools.grantedInstructions` 里才注入。
+       * 这段文字进的是系统提示，能改写模型对其他事的判断，所以授权独立于工具。
+       */
+      instructions: true,
       fetch: false,
     })
     /** @type {{ userId?: string, nickname?: string }|null} 登录信息，用来拼"机器人的称呼" */
@@ -740,6 +772,15 @@ export class QdashNeoService {
       silentRule: false,
       // 记忆引导跟工具成对出现：没开记忆就别教它用 memory_add
       memoryRule: this.config?.agent?.memoryRule !== false && this.config?.memory?.enabled === true,
+      /**
+       * 插件引导：**只拼已授权的**。
+       *
+       * 这段文字进的是系统提示，等于能改写行为准则 —— 所以和工具一样，
+       * 注册只让它"看得见"，要 `instructions.grantedInstructions` 里点了才生效。
+       */
+      pluginRules: this.pluginInstructions.granted(
+        this.config?.tools?.grantedInstructions ?? [],
+      ),
       log: this.log,
     })
     if (!res.ok) this.log('warn', `qdash-neo: 系统提示同步失败 file=${res.file} reason=${res.error}`)

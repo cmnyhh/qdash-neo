@@ -1758,6 +1758,73 @@ function renderToolsPane(group, rerender) {
     )
   }
 
+  /**
+   * 2.4b 插件贡献的提示词引导。
+   *
+   * 和插件工具一样是「注册即可见、授权才生效」，但**授权名单独立**：
+   * 这段文字会进系统提示，能改写模型对其他事的判断，比工具权限更敏感。
+   *
+   * 界面上要能看到全文 —— 否则用户在给一段看不见的文字授权。
+   */
+  if (data?.instructions?.length) {
+    const okIns = new Set((data.config?.grantedInstructions ?? []).map(String))
+    /** @type {Map<string, object[]>} owner → 该插件的引导 */
+    const byOwnerIns = new Map()
+    for (const it of data.instructions) {
+      const owner = String(it.owner ?? '未署名插件')
+      if (!byOwnerIns.has(owner)) byOwnerIns.set(owner, [])
+      byOwnerIns.get(owner).push(it)
+    }
+
+    const setGrantedIns = async (owner, nextOn) => {
+      try {
+        await apiWrite('/tools/plugin', { owner, granted: nextOn, kind: 'instructions' })
+        showBanner(
+          nextOn ? `已允许「${owner}」的引导，下一轮生效` : `已停用「${owner}」的引导`,
+        )
+        toolsUI.data = null
+        ensureTools(() => rerender(), { force: true })
+      } catch (err) {
+        showBanner(`切换失败：${err?.message ?? err}`, { bad: true })
+      }
+    }
+
+    body.push(
+      el('div', { class: 'persona-section' }, [
+        el('div', { class: 'persona-head' }, [
+          el('span', { class: 'persona-title', text: '插件引导' }),
+          el('span', { class: 'persona-count', text: `${data.instructions.length} 段` }),
+        ]),
+        ...[...byOwnerIns.entries()].map(([owner, items]) => {
+          const on = okIns.has(owner)
+          const btn = el('button', {
+            class: 'btn btn-ghost',
+            type: 'button',
+            text: on ? '停用' : '允许',
+          })
+          btn.addEventListener('click', () => setGrantedIns(owner, !on))
+          return el('div', { class: 'tool-group' }, [
+            el('div', { class: 'tool-group-head' }, [
+              el('span', { class: 'tool-group-label', text: owner }),
+              on ? null : el('span', { class: 'badge', text: '未生效' }),
+              btn,
+            ]),
+            ...items.map(it =>
+              el('div', { class: 'panel-sub' }, [
+                el('div', { class: 'field-static', text: `「${it.key}」` }),
+                el('div', { class: 'field-static', text: it.text }),
+              ]),
+            ),
+          ])
+        }),
+        el('p', {
+          class: 'panel-sub',
+          text: '这段文字会进系统提示 —— 等于能改写模型的行为准则。所以和工具授权分开，默认不注入。',
+        }),
+      ]),
+    )
+  }
+
   // 2.5 记忆工具：只在 memory.enabled 时才会有内容
   if (data?.memory?.length) {
     body.push(

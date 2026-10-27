@@ -90,16 +90,32 @@ export function renderInstructionsBlock(userText) {
 }
 
 /**
- * 插件规则块。两个规则都关掉时返回空串（= 删掉这个块）。
+ * 插件规则块。两个规则都关掉、且没有插件引导时返回空串（= 删掉这个块）。
  *
- * @param {{ silentRule?: boolean, memoryRule?: boolean }} [opts]
+ * @param {{ silentRule?: boolean, memoryRule?: boolean,
+ *           pluginRules?: Array<{ owner?: string, text?: string }> }} [opts]
  */
-export function renderRulesBlock({ silentRule = true, memoryRule = false } = {}) {
+export function renderRulesBlock({ silentRule = true, memoryRule = false, pluginRules = [] } = {}) {
   const parts = []
   // 发送方式无条件写：模型不知道"正文不发"，就会把话丢在落库里
   parts.push(SEND_RULE)
   if (silentRule) parts.push(SILENT_RULE)
   if (memoryRule) parts.push(MEMORY_RULE)
+
+  /**
+   * 插件贡献的引导。**每段带来源标题**。
+   *
+   * 不带的话，几段插进来的文字会和内核规则混成一片 —— 用户看 `AGENTS.md` 时
+   * 分不清哪句是内核保证的、哪句是某个插件加的；出问题也找不到该关谁。
+   *
+   * 只有**被授予**的插件才会走到这里（授权在 service 侧过滤，见 `pluginRules()`）。
+   */
+  for (const r of Array.isArray(pluginRules) ? pluginRules : []) {
+    const text = String(r?.text ?? '').trim()
+    if (!text) continue
+    parts.push(`【来自「${String(r?.owner ?? '').trim() || '未署名插件'}」插件的引导】\n${text}`)
+  }
+
   if (!parts.length) return ''
   return `${RULES_BEGIN}\n${OWNED_NOTE}\n\n${parts.join('\n\n')}\n${RULES_END}\n`
 }
@@ -167,13 +183,21 @@ function ensureProjectMarker(dir, log) {
  * }} opts
  * @returns {{ ok: boolean, file: string, action: 'created'|'updated'|'removed'|'unchanged'|'failed', error?: string }}
  */
-export function syncInstructions({ cwd, text = '', silentRule = true, memoryRule = false, log = () => {} }) {
+export function syncInstructions({
+  cwd,
+  text = '',
+  silentRule = true,
+  memoryRule = false,
+  /** 已授权的插件引导（`[{ owner, text }]`）；未授权的在 service 侧就过滤掉了 */
+  pluginRules = [],
+  log = () => {},
+}) {
   const dir = String(cwd ?? '').trim()
   if (!dir) return { ok: false, file: '', action: 'failed', error: 'cwd 为空' }
 
   const file = join(dir, 'AGENTS.md')
   const userBlock = renderInstructionsBlock(text)
-  const rulesBlock = renderRulesBlock({ silentRule, memoryRule })
+  const rulesBlock = renderRulesBlock({ silentRule, memoryRule, pluginRules })
 
   // 先确保 DSH 会把这个目录当成项目根，否则下面写的文件永远不会被读
   if (userBlock || rulesBlock) ensureProjectMarker(dir, log)
