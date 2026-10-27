@@ -258,3 +258,53 @@ test('选项卡：同来源重注册要替换（否则卸载残留会让插件�
   r2.register(basic({ id: 'x', owner: '' }))
   assert.throws(() => r2.register(basic({ id: 'x', owner: '' })), /已被占用/)
 })
+
+test('form 块：options 与 when 必须透传（否则下拉退化成文本框、条件字段永远显示）', () => {
+  const { reg } = make()
+  reg.register({
+    id: 'v3',
+    title: 'T',
+    owner: 'p',
+    layout: [
+      {
+        type: 'form',
+        fields: [
+          { path: 'protocol', label: '协议', options: [{ value: 'openai', label: 'openai' }, { value: 'sovits' }] },
+          { path: 'voice', label: '音色', when: { path: 'protocol', in: ['openai'] } },
+          { path: 'refAudioPath', label: '参考音频', when: { path: 'protocol', is: 'sovits' } },
+        ],
+      },
+    ],
+  })
+
+  const fields = reg.list()[0].layout[0].fields
+  assert.deepEqual(
+    fields[0].options,
+    [{ value: 'openai', label: 'openai' }, { value: 'sovits', label: 'sovits' }],
+    'options 被吞掉的话前端只会渲染普通文本框',
+  )
+  assert.deepEqual(fields[1].when, { path: 'protocol', in: ['openai'] })
+  assert.deepEqual(fields[2].when, { path: 'protocol', is: 'sovits' })
+
+  // 形状不对要在注册期报错，而不是让前端拿到一个看不懂的对象
+  assert.throws(
+    () =>
+      reg.register({
+        id: 'v4',
+        title: 'T',
+        owner: 'p',
+        layout: [{ type: 'form', fields: [{ path: 'a', when: { path: '' } }] }],
+      }),
+    /when 缺少 path/,
+  )
+  assert.throws(
+    () =>
+      reg.register({
+        id: 'v5',
+        title: 'T',
+        owner: 'p',
+        layout: [{ type: 'form', fields: [{ path: 'a', when: { path: 'x' } }] }],
+      }),
+    /需要 in（数组）或 is/,
+  )
+})

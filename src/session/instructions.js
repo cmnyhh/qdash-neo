@@ -45,6 +45,23 @@ export const SILENT_RULE =
   '决定开口就正常回复。不要解释这个约定，也不要把它当作聊天内容的一部分。'
 
 /**
+ * 发送方式：**必须**告诉模型，否则它会以为"输出即发送"。
+ *
+ * `onAssistant` 的设计是"工具是唯一出口"——直接输出的正文只落库
+ * （`state='unforwarded'`），**不会**发到 QQ。但系统提示里长期没写这一点，
+ * 于是模型一旦决定不调工具（比如前面 `qq_speak` 失败、它以为该改用文字），
+ * 那一段话就静默消失了：库里有、QQ 没有、日志里也只有一句 info 级的
+ * 「未调发送工具，正文不发出」。
+ *
+ * 这条是**无条件**的，不随配置开关：没有它，模型永远不知道该怎么做。
+ */
+export const SEND_RULE =
+  '你要说的话必须通过 qq_send_message 工具发出去 —— 直接输出的正文不会出现在聊天里，对方收不到。' +
+  '想发语音用 qq_speak。' +
+  '工具调用失败时，改用 qq_send_message 把话说出去，不要把内容当作普通回复输出；' +
+  '如果确实不该说话，按下面的规则输出 [[SILENT]]，也不要输出别的内容。'
+
+/**
  * 记忆写入的引导。
  *
  * 为什么写进系统层而不是每条 user message：它是**跨请求恒定**的行为约定
@@ -79,6 +96,8 @@ export function renderInstructionsBlock(userText) {
  */
 export function renderRulesBlock({ silentRule = true, memoryRule = false } = {}) {
   const parts = []
+  // 发送方式无条件写：模型不知道"正文不发"，就会把话丢在落库里
+  parts.push(SEND_RULE)
   if (silentRule) parts.push(SILENT_RULE)
   if (memoryRule) parts.push(MEMORY_RULE)
   if (!parts.length) return ''

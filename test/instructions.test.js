@@ -18,6 +18,7 @@ import {
   RULES_BEGIN,
   RULES_END,
   SILENT_RULE,
+  SEND_RULE,
   renderBlock,
   renderInstructionsBlock,
   renderRulesBlock,
@@ -40,7 +41,10 @@ test('指令块：用户文本为空时不产生用户块', () => {
 })
 
 test('指令块：规则块独立于用户文本（两个都关才为空）', () => {
-  assert.equal(renderRulesBlock({ silentRule: false, memoryRule: false }), '')
+  // 发送规则**无条件**写：模型不知道「正文不发」就会把话丢在落库里
+  const alwaysOn = renderRulesBlock({ silentRule: false, memoryRule: false })
+  assert.equal(alwaysOn.includes(SEND_RULE), true, '这条不跟开关走')
+  assert.equal(alwaysOn.includes(MEMORY_RULE), false, '可关的仍然可关')
   const only = renderRulesBlock({ silentRule: true })
   assert.equal(only.includes(RULES_BEGIN), true)
   assert.equal(only.includes(SILENT_RULE), true)
@@ -98,8 +102,8 @@ test('指令同步：规则全关 + 用户文本为空 → 文件被清空而不
     const r = syncInstructions({ cwd: dir, text: '', silentRule: false, memoryRule: false })
     assert.equal(r.ok, true)
     const text = readFileSync(join(dir, 'AGENTS.md'), 'utf8')
-    assert.equal(text.trim(), '', '两个块都该消失')
-    assert.equal(text.includes('<!--'), false, '不留任何标记残骸')
+    assert.equal(text.includes(SILENT_RULE), false, '可关的块要消失')
+    assert.equal(text.includes(SEND_RULE), true, '发送规则常驻，不随开关走')
   }))
 
 test('指令同步：内容没变时是 unchanged，不重复写盘', () =>
@@ -157,8 +161,8 @@ test('指令同步：顺带创建 .git 标记（缺了它 DSH 跳过整个 basel
     assert.equal(existsSync(join(dir, '.git')), true, '没有 .git 时 AGENTS.md 不会被读')
   }))
 
-test('指令同步：两个块都为空时不创建 .git（不写内容就别留标记）', () =>
+test('指令同步：发送规则常驻，所以总会有内容可写', () =>
   withDir(dir => {
     syncInstructions({ cwd: dir, text: '', silentRule: false, memoryRule: false })
-    assert.equal(existsSync(join(dir, '.git')), false)
+    assert.equal(existsSync(join(dir, 'AGENTS.md')), true, '发送规则常驻，文件一定会写')
   }))

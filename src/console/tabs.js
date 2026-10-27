@@ -221,13 +221,52 @@ export class TabRegistry {
       if (fields.length > MAX_ROWS) fail(`${where}的 fields 超过上限 ${MAX_ROWS}`)
       const clean = fields.map((f, i) => {
         if (!isPlainObject(f) || typeof f.path !== 'string') fail(`${where} 的第 ${i + 1} 个字段缺少 path`)
-        return {
+        const out = {
           path: String(f.path),
           label: String(f.label ?? f.path),
           type: String(f.type ?? 'string'),
           value: jsonSafe(f.value ?? null, `${where}.fields[${i}].value`, fail),
           description: String(f.description ?? ''),
         }
+
+        /**
+         * `options`：下拉选项。
+         *
+         * **必须在这里透传**。之前只返回 path/label/type/value/description，
+         * 插件写了 `options` 也会被吞掉，前端拿到的是普通文本框 ——
+         * 和 `submit` 那次是同一个坑：插件侧看不出异常，因为它确实传了。
+         */
+        if (Array.isArray(f.options) && f.options.length > 0) {
+          out.options = f.options.slice(0, 50).map((o, j) => {
+            if (!isPlainObject(o) || o.value == null) {
+              fail(`${where}.fields[${i}].options[${j}] 必须是 { value, label }`)
+            }
+            return {
+              value: String(o.value),
+              label: String(o.label ?? o.value),
+            }
+          })
+        }
+
+        /**
+         * `when`：条件显示。`{ path, in: [...] }` 或 `{ path, is: ... }`。
+         *
+         * 只接受这两种形状：放开任意表达式等于让插件在前端跑代码，
+         * 而这个能力只需要"按某个字段的值决定显示与否"。
+         */
+        if (isPlainObject(f.when)) {
+          const wPath = String(f.when.path ?? '')
+          if (!wPath) fail(`${where}.fields[${i}].when 缺少 path`)
+          if (Array.isArray(f.when.in)) {
+            out.when = { path: wPath, in: f.when.in.slice(0, 50).map(String) }
+          } else if ('is' in f.when) {
+            out.when = { path: wPath, is: String(f.when.is) }
+          } else {
+            fail(`${where}.fields[${i}].when 需要 in（数组）或 is（单值）`)
+          }
+        }
+
+        return out
       })
 
       /**
