@@ -109,6 +109,44 @@ TTS 支持三种接口形式，在插件的 `cordis.patch.yml` 中配置（`tts.
 
 合成结果按内容与音色缓存，相同文本不会重复合成。TTS 不可用时，模型会改用文字表达相同内容，不会因此丢失回复。
 
+## 远程访问控制台
+
+控制台默认只监听 `127.0.0.1:7800`，**本机以外不可达**。这是有意的：它能改白名单、OneBot 凭据和群管理权限。
+
+需要远程访问时，用下面两种方式之一，**不要**直接把 `console.host` 改成 `0.0.0.0`（等于把改配置的入口暴露到公网）。
+
+### 方式一：SSH 隧道
+
+```bash
+ssh -L 7800:127.0.0.1:7800 user@your-server
+```
+
+然后在**自己电脑**的浏览器打开 `http://127.0.0.1:7800/`。不需要改任何配置。
+
+### 方式二：反向代理
+
+以 nginx 为例：
+
+```nginx
+location /qdash-neo/ {
+    proxy_pass http://127.0.0.1:7800/;          # 结尾的 / 会剥掉前缀
+    proxy_set_header Host $host;                 # 必须传：Host 白名单靠它
+    proxy_set_header X-Forwarded-Proto $scheme;  # 必须传：HTTPS 下 cookie 才带 Secure
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+}
+```
+
+同时在 `cordis.patch.yml` 里放行这个域名：
+
+```yaml
+console:
+  allowedHosts: ['example.com']
+```
+
+然后访问 `https://example.com/qdash-neo/`。
+
+**`Host` 和 `X-Forwarded-Proto` 两个头都要传**：少了第一个会被 403 拒绝（提示「Host 不在白名单」），少了第二个在 HTTPS 下 cookie 不带 `Secure`，浏览器可能拒存。
+
 ## 常见问题
 
 **发言过少？**
@@ -121,7 +159,7 @@ TTS 支持三种接口形式，在插件的 `cordis.patch.yml` 中配置（`tts.
 需要支持视觉的模型，请将 `agent.model` 改为相应模型。
 
 **控制台无法访问？**
-默认仅监听 `127.0.0.1:7800`。远程访问请使用 SSH 隧道：`ssh -L 7800:127.0.0.1:7800 user@host`，然后在浏览器中打开 `http://127.0.0.1:7800/`。
+默认仅监听 `127.0.0.1:7800`，本机以外不可达。这是有意的，见上文「远程访问控制台」（SSH 隧道或反向代理）。
 
 **更换 `DSH_HOME` 后配置丢失？**
 数据库随 `DSH_HOME` 迁移。数据库使用 SQLite WAL 模式，迁移时需同时复制 `.db`、`-wal`、`-shm` **三个文件**；仅复制 `.db` 会导致数据丢失。
