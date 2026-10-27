@@ -356,6 +356,57 @@ export function configUpdate({ service, server, body }) {
 }
 
 /** `/api/tabs`：插件选项卡（内置五项由前端固定，不在这里） */
+/**
+ * 开关某个插件的全部工具。
+ *
+ * **为什么不复用 `/api/config`**：那条路要求前端带上正确的 `revision`（乐观锁），
+ * 而工具页的数据是打开那一刻拉的 —— 用户在别处改过配置之后再来点开关，
+ * revision 已经过期，直接 409。表现为"点了禁用没反应"，且提示藏在 banner 里，
+ * 很容易被当成按钮坏了。
+ *
+ * 这里由**服务端**取当前 revision，前端只表达意图（哪个插件、开还是关）。
+ *
+ * @param {{ service: object, server?: object, body?: object }} deps
+ */
+export function pluginToolToggle({ service, server, body }) {
+  const cs = configStoreOf(service)
+
+  const owner = String(body?.owner ?? '').trim()
+  if (!owner) throw new ApiError('bad-request', '缺少插件名（owner）', 400)
+  if (typeof body?.enabled !== 'boolean') {
+    throw new ApiError('bad-request', 'enabled 必须是布尔值', 400)
+  }
+
+  const current = (cs.effective()?.tools?.disabledPlugins ?? []).map(String)
+  const next = new Set(current)
+  if (body.enabled) next.delete(owner)
+  else next.add(owner)
+
+  let result
+  try {
+    result = cs.update({
+      patch: { 'tools.disabledPlugins': [...next] },
+      revision: cs.revision,
+      actor: String(body?.actor ?? '').trim() || 'console',
+    })
+  } catch (err) {
+    translate(err)
+  }
+
+  if (result.changed.length > 0) {
+    service.applyConfig(result.effective)
+    server?.syncConfig?.(result.effective)
+  }
+
+  return {
+    ok: true,
+    owner,
+    enabled: body.enabled,
+    disabledPlugins: [...next],
+    revision: result.revision,
+  }
+}
+
 export function tabs({ server, service }) {
   const reg = server?.tabs ?? null
   return { ok: true, status: service?.status?.() ?? null, tabs: reg?.list?.() ?? [] }

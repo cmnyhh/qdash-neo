@@ -52,6 +52,28 @@ export function icon(name, cls = '') {
 }
 
 /** `text` 永远走 textContent；动态尺寸走 CSSOM（CSP 拦内联 style 属性） */
+/**
+ * 可编辑表单的本地草稿：`<tabId>|<path>` → 用户敲进去的值。
+ *
+ * 控制台有轮询，每次都会重建 DOM。输入框的 value 若直接绑后端快照
+ * （`f.value`），那么**每一轮轮询都会把正在输入的内容抹掉** ——
+ * 表现为"输入框失去焦点内容就没了"，而它跟焦点其实没关系。
+ *
+ * 保存成功后清掉对应选项卡的草稿，之后的渲染回落到后端的新快照；
+ * 保存失败则保留，免得用户重填一遍。
+ *
+ * @type {Map<string, unknown>}
+ */
+const formDrafts = new Map()
+
+/** @param {string} tabId */
+export function clearFormDrafts(tabId) {
+  const prefix = `${tabId ?? ''}|`
+  for (const key of [...formDrafts.keys()]) {
+    if (key.startsWith(prefix)) formDrafts.delete(key)
+  }
+}
+
 export function el(tag, opts = {}, children = []) {
   const node = document.createElement(tag)
   if (opts.class) node.className = opts.class
@@ -170,20 +192,33 @@ function renderBlock(block, ctx) {
     const editable = Boolean(block.submit) && typeof ctx.onAction === 'function'
     /** @type {Map<string, () => unknown>} path → 取值函数 */
     const getters = new Map()
+    /** 草稿键带 tabId：两个选项卡有同名字段时互不干扰 */
+    const draftKey = path => `${ctx.tabId ?? ''}|${path}`
 
     const rows = (block.fields ?? []).map(f => {
       const key = String(f.path ?? f.label ?? '')
+      const dk = draftKey(key)
+      /**
+       * 有草稿就用草稿。
+       *
+       * 控制台有轮询，每次都重建 DOM。若 value 直接绑 `f.value`（后端快照），
+       * 那么**每一轮轮询都会把你正在输入的内容抹掉** ——
+       * 表现是"输入框失去焦点内容就没了"，看着像浏览器 bug。
+       */
+      const initial = formDrafts.has(dk) ? formDrafts.get(dk) : f.value
       let control
 
       if (!editable) {
         control = el('span', { class: 'field-static' }, formatValue(f.value, f.type))
       } else if (f.type === 'boolean') {
         const box = el('input', { type: 'checkbox' })
-        box.checked = f.value === true
+        box.checked = initial === true
+        box.addEventListener('change', () => formDrafts.set(dk, box.checked))
         getters.set(key, () => box.checked)
         control = el('label', { class: 'field-check' }, [box])
       } else if (f.type === 'number') {
-        const input = el('input', { class: 'field-input', type: 'number', value: f.value ?? '' })
+        const input = el('input', { class: 'field-input', type: 'number', value: initial ?? '' })
+        input.addEventListener('input', () => formDrafts.set(dk, input.value))
         // 空串转成 0 而不是 NaN：后者 JSON 序列化成 null，插件那边会读出 null
         getters.set(key, () => {
           const n = Number(input.value)
@@ -191,7 +226,8 @@ function renderBlock(block, ctx) {
         })
         control = input
       } else {
-        const input = el('input', { class: 'field-input', type: 'text', value: f.value ?? '' })
+        const input = el('input', { class: 'field-input', type: 'text', value: initial ?? '' })
+        input.addEventListener('input', () => formDrafts.set(dk, input.value))
         getters.set(key, () => input.value)
         control = input
       }
@@ -212,10 +248,12 @@ function renderBlock(block, ctx) {
         icon('check'),
         el('span', { text: block.submit.label || '保存' }),
       ])
-      btn.addEventListener('click', () => {
+      btn.addEventListener('click', async () => {
         const values = {}
         for (const [k, get] of getters) values[k] = get()
-        ctx.onAction(ctx.tabId, block.submit.id, btn, { values })
+        const ok = await ctx.onAction(ctx.tabId, block.submit.id, btn, { values })
+        // 成功后清草稿：下次渲染用后端的新快照；失败则保留，别让用户重填
+        if (ok !== false) clearFormDrafts(ctx.tabId)
       })
       body.push(el('div', { class: 'form-actions' }, [btn]))
     }

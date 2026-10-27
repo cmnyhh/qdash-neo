@@ -1523,15 +1523,33 @@ function cfgGroupKey(groups) {
  * 和配置字段不同：`GET /api/tools` 返回的是**宿主此刻真实注册了什么**，
  * 会随 profile / MCP 连接变化 —— 所以不能塞进 `/api/config`（那是 5 秒轮询的）。
  */
-const toolsUI = { data: null, loading: false, error: '' }
+const toolsUI = { data: null, loading: false, error: '', at: 0 }
 
-function ensureTools(onLoaded) {
-  if (toolsUI.data || toolsUI.loading) return
+/**
+ * 拉工具清单。
+ *
+ * **基本不缓存**：工具清单是"此刻注册了什么"，插件可以随时注册/注销，
+ * 缓存住它等于让页面撒谎。所以每次进工具页都重新拉。
+ *
+ * 只保留一个 2 秒窗口，用来合并**同一轮渲染里的多次调用**
+ * （面板重建时几个块会先后要数据），不是给页面做缓存用的。
+ *
+ * 早先的写法是 `if (toolsUI.data) return` —— 结果是"点了禁用没反应，
+ * 刷新页面才看到"，以及"插件新注册的工具要重进页面才出现"。
+ *
+ * @param {Function} [onLoaded]
+ * @param {{ force?: boolean }} [opts]
+ */
+function ensureTools(onLoaded, { force = false } = {}) {
+  if (toolsUI.loading) return
+  const fresh = toolsUI.data && Date.now() - toolsUI.at < 2000
+  if (fresh && !force) return
   toolsUI.loading = true
   api('/tools', { keep: true })
     .then(d => {
       toolsUI.data = d
       toolsUI.error = ''
+      toolsUI.at = Date.now()
     })
     .catch(err => {
       if (err?.name === 'AbortError') return
@@ -1677,16 +1695,22 @@ function renderToolsPane(group, rerender) {
      * 那个插件还能不能正常工作"，那个判断只有插件自己知道。
      */
     const toggleOwner = async (owner, nextOn) => {
-      const next = new Set(disabled)
-      if (nextOn) next.delete(owner)
-      else next.add(owner)
       try {
-        await apiWrite('/config', {
-          patch: { 'tools.disabledPlugins': [...next] },
-          revision: data.configRevision,
-        })
+        /**
+         * 走专用接口，**不碰 revision**。
+         *
+         * 用 `/api/config` 的话要带上打开页面时的 revision，而用户在别处改过配置
+         * 之后它就已经过期了 —— 直接 409，表现为"点了禁用没反应"，
+         * 而提示藏在 banner 里，很容易被当成按钮坏了。
+         */
+        await apiWrite('/tools/plugin', { owner, enabled: nextOn })
         showBanner(nextOn ? `已启用「${owner}」的工具` : `已禁用「${owner}」的工具`)
-        rerender()
+        /**
+         * 先丢缓存再拉，**不能只调 `rerender()`**：`ensureTools` 有缓存短路，
+         * 那样只是拿旧数据重建 DOM，看起来像"点了没反应、刷新才生效"。
+         */
+        toolsUI.data = null
+        ensureTools(() => rerender(), { force: true })
       } catch (err) {
         showBanner(`切换失败：${err?.message ?? err}`, { bad: true })
       }
@@ -2238,9 +2262,12 @@ function renderTab(data, tabId) {
         body ?? {},
       )
       showBanner(res.result === undefined ? '已执行' : `已执行：${clip(JSON.stringify(res.result), 120)}`)
-    } catch (err) {
+      // 表单据此决定要不要清草稿：成功清、失败留着让用户改
+      return true
+      } catch (err) {
       showBanner(err.message, { bad: true })
-    } finally {
+      return false
+      } finally {
       button.disabled = false
       button.textContent = original
     }

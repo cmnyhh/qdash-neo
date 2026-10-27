@@ -17,6 +17,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 
+import { pluginToolToggle } from '../src/console/api.js'
 import { ConfigStore } from '../src/config/runtime.js'
 import { Persona } from '../src/persona/index.js'
 import { SESSION_COOKIE, hostAllowed, resolvePassword, setPassword } from '../src/console/auth.js'
@@ -1058,4 +1059,34 @@ test('首次设置页：样式与脚本走独立文件（内联会被 CSP 挡掉
   } finally {
     h.dispose?.()
   }
+})
+
+test('插件工具开关：服务端自己取 revision，前端过期也不会 409', () => {
+  const calls = []
+  const cs = {
+    revision: 7,
+    effective: () => ({ tools: { disabledPlugins: ['a'] } }),
+    update({ patch, revision }) {
+      calls.push({ patch, revision })
+      return { changed: ['tools.disabledPlugins'], effective: {}, revision: 8 }
+    },
+  }
+  const service = { configStore: cs, applyConfig: () => {} }
+
+  const r = pluginToolToggle({ service, body: { owner: 'b', enabled: false } })
+  assert.deepEqual(calls[0].patch, { 'tools.disabledPlugins': ['a', 'b'] }, '关掉就加进去')
+  assert.equal(
+    calls[0].revision,
+    7,
+    '用服务端当前 revision —— 前端带的是打开页面时的那个，早就过期了',
+  )
+  assert.deepEqual(r.disabledPlugins, ['a', 'b'])
+
+  // 再开回来
+  cs.effective = () => ({ tools: { disabledPlugins: ['a', 'b'] } })
+  const r2 = pluginToolToggle({ service, body: { owner: 'b', enabled: true } })
+  assert.deepEqual(r2.disabledPlugins, ['a'], '开回来就从列表里移除')
+
+  assert.throws(() => pluginToolToggle({ service, body: { owner: '', enabled: true } }), /缺少插件名/)
+  assert.throws(() => pluginToolToggle({ service, body: { owner: 'x' } }), /enabled/)
 })

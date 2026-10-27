@@ -402,9 +402,19 @@ export class ConsoleServer {
     const isPersonaWrite = method === 'POST' && sub === '/api/persona'
     const isChatWrite = method === 'POST' && sub === '/api/chats'
     const isAccountWrite = method === 'POST' && sub === '/api/account/password'
+    /** 插件工具开关：服务端自己取 revision，前端只表达意图 */
+    const isToolWrite = method === 'POST' && sub === '/api/tools/plugin'
     const isTabAction = method === 'POST' && TAB_ACTION_RE.test(sub)
 
-    if (!isRead && !isConfigWrite && !isPersonaWrite && !isChatWrite && !isAccountWrite && !isTabAction) {
+    if (
+      !isRead &&
+      !isConfigWrite &&
+      !isPersonaWrite &&
+      !isChatWrite &&
+      !isAccountWrite &&
+      !isToolWrite &&
+      !isTabAction
+    ) {
       const allow = TAB_ACTION_RE.test(sub)
         ? 'POST'
         : sub === '/api/config' || sub === '/api/persona' || sub === '/api/chats'
@@ -430,6 +440,18 @@ export class ConsoleServer {
       const body = await this.#readJson(req)
       const actor = String(body?.actor ?? '').trim() || this.#clientIp(req)
       const payload = api.configUpdate({ service: this.service, server: this, body: { ...body, actor } })
+      this.#json(res, 200, payload)
+      return
+    }
+
+    if (isToolWrite) {
+      const body = await this.#readJson(req)
+      const actor = String(body?.actor ?? '').trim() || this.#clientIp(req)
+      const payload = api.pluginToolToggle({
+        service: this.service,
+        server: this,
+        body: { ...body, actor },
+      })
       this.#json(res, 200, payload)
       return
     }
