@@ -585,12 +585,20 @@ export function toolsCatalog({ service }) {
     internal,
     external,
     blocked,
+    /**
+     * 配置版本号。工具页的开关要写 `tools.disabledPlugins`，
+     * 而 `configStore.update` 强制要求 revision 匹配，不传会 409。
+     */
+    configRevision: service?.configStore?.revision ?? 0,
     config: {
       enabled: cfg.enabled !== false,
       imageMode: String(cfg.imageMode ?? 'auto'),
       qqRead: cfg.qqRead !== false,
       qqWrite: cfg.qqWrite !== false,
       qqAdmin: cfg.qqAdmin === true,
+      allowPluginTools: cfg.allowPluginTools !== false,
+      /** 被整体禁用的插件（按 owner）。工具页按这个渲染开关 */
+      disabledPlugins: (cfg.disabledPlugins ?? []).map(String),
       internalAllow: cfg.internalAllow ?? [],
       externalAllow: cfg.externalAllow ?? [],
     },

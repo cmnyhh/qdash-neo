@@ -236,3 +236,21 @@ test('插件工具：可补挂到已存在的会话（不用删会话重建）',
 
   assert.equal(state.attachPluginTool(reg.defs()[0]), false, '重复补挂要短路，不能抛错')
 })
+
+test('插件工具：能按 owner 摘除（禁用后对已有会话生效）', () => {
+  const tools = fakeTools()
+  const reg = mkReg()
+  reg.register({ name: 'a_tool', description: 'a', owner: 'pa', execute: async () => ({}) })
+  reg.register({ name: 'b_tool', description: 'b', owner: 'pb', execute: async () => ({}) })
+
+  const state = applyToolPolicy(tools, {
+    chatKey: 'g:1',
+    config: { tools: { enabled: true }, policy: {} },
+    deps: {},
+    pluginTools: reg,
+  })
+
+  assert.equal(state.detachPluginOwner('pa'), 1, 'pa 的工具要被摘掉')
+  assert.equal(state.detachPluginOwner('pa'), 0, '重复摘除返回 0，不抛错')
+  assert.equal(state.detachPluginOwner('不存在的插件'), 0, '未知 owner 返回 0')
+})

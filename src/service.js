@@ -841,6 +841,34 @@ export class QdashNeoService {
    *
    * @returns {number} 实际补挂了几处（一个工具×一个会话算一处）
    */
+  /**
+   * 按 `tools.disabledPlugins` 把插件工具从**已有会话**上摘掉，再补挂该挂的。
+   *
+   * 两件事都要做：只摘不挂的话，把插件重新启用之后要等新会话才回来；
+   * 只挂不摘的话，"禁用"只对新会话生效。
+   *
+   * @returns {{ detached: number, attached: number }}
+   */
+  syncPluginToolPolicy() {
+    const blocked = new Set((this.config?.tools?.disabledPlugins ?? []).map(String))
+    let detached = 0
+
+    if (blocked.size > 0) {
+      for (const state of this.toolStates.values()) {
+        if (typeof state?.detachPluginOwner !== 'function') continue
+        for (const owner of blocked) detached += state.detachPluginOwner(owner)
+      }
+    }
+
+    // 已挂过的由 attachPluginTool 短路，重复调用不会抛错
+    const attached = this.syncPluginToolsToSessions()
+
+    if (detached > 0) {
+      this.log('info', `qdash-neo: 按配置从已有会话摘除插件工具 ${detached} 个`)
+    }
+    return { detached, attached }
+  }
+
   syncPluginToolsToSessions() {
     const defs = this.pluginTools?.defs?.() ?? []
     if (!defs.length || this.toolStates.size === 0) return 0
@@ -2033,6 +2061,14 @@ export class QdashNeoService {
     this.atLookaheadMs = Number.isFinite(jc.atLookaheadMs) ? jc.atLookaheadMs : 2000
 
     this.gates?.applyConfig?.(next)
+
+    /**
+     * 插件工具的开关变了要**立刻**生效。
+     *
+     * 否则"禁用"只对新建会话有效：界面上已经显示已禁用，当前对话里模型还能调它 ——
+     * 这种不一致比没有开关更糟，用户会不再信任任何开关。
+     */
+    this.syncPluginToolPolicy()
 
     this.applyRandomPolicy(next)
 

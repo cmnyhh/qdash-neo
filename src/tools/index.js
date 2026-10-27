@@ -749,6 +749,8 @@ export function applyToolPolicy(
    */
   const kernelNames = new Set(created.defs.map(d => d.name))
   const pluginNames = []
+  /** @type {Map<string, Function[]>} owner → 该插件在本会话里的 disposer */
+  const pluginDisposers = new Map()
   /**
    * 按插件关工具。
    *
@@ -774,12 +776,17 @@ export function applyToolPolicy(
          * 而"发给哪个会话"是它唯一必须知道的上下文。`exec` 是 DSH 的调用上下文，
          * 里面没有 `chatKey`，所以在这里注入，插件侧就是 `execute(args, { chatKey })`。
          */
-        disposers.push(
-          tools.register({
-            ...d,
-            execute: (args, exec) => d.execute(args, { ...(exec ?? {}), chatKey }),
-          }),
-        )
+        const disposeTool = tools.register({
+          ...d,
+          execute: (args, exec) => d.execute(args, { ...(exec ?? {}), chatKey }),
+        })
+        disposers.push(disposeTool)
+
+        // 按 owner 分别记账：`tools.disabledPlugins` 变更时要能精确摘掉某个插件的工具
+        const owner = String(d.owner ?? '')
+        if (!pluginDisposers.has(owner)) pluginDisposers.set(owner, [])
+        pluginDisposers.get(owner).push(disposeTool)
+
         pluginNames.push(d.name)
       } catch (err) {
         // 重名（宿主或别的插件已注册）不该让会话建不起来
@@ -914,6 +921,30 @@ export function applyToolPolicy(
       }
       allow.push(name)
       return true
+    },
+
+    /**
+     * 摘掉某个插件的全部工具。
+     *
+     * `tools.disabledPlugins` 变更时用 —— 没有它的话"禁用"只对**新建会话**生效，
+     * 已有会话里那个工具还能被调用，而界面上已经显示"已禁用"。
+     *
+     * @param {string} owner 插件名（注册工具时传的 owner）
+     * @returns {number} 摘掉了几个
+     */
+    detachPluginOwner(owner) {
+      const key = String(owner ?? '')
+      const list = pluginDisposers.get(key)
+      if (!list?.length) return 0
+      for (const fn of list) {
+        try {
+          fn()
+        } catch {
+          /* 单个失败不该影响其它 */
+        }
+      }
+      pluginDisposers.delete(key)
+      return list.length
     },
 
     /** 本回合已经通过工具发过几条 */

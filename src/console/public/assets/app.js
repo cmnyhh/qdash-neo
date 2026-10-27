@@ -1661,28 +1661,71 @@ function renderToolsPane(group, rerender) {
    * 后者要等下一次建会话才更新，表现为"插件说注册了，目录里永远没有"。
    */
   if (data?.plugins?.length) {
+    const disabled = new Set((data.config?.disabledPlugins ?? []).map(String))
+    /** @type {Map<string, object[]>} owner → 该插件的工具 */
+    const byOwner = new Map()
+    for (const t of data.plugins) {
+      const owner = String(t.owner ?? '未署名插件')
+      if (!byOwner.has(owner)) byOwner.set(owner, [])
+      byOwner.get(owner).push(t)
+    }
+
+    /**
+     * 切换某个插件的工具。
+     *
+     * 粒度是**整个插件**，不是单个工具 —— 内核不知道"摘掉这一个，
+     * 那个插件还能不能正常工作"，那个判断只有插件自己知道。
+     */
+    const toggleOwner = async (owner, nextOn) => {
+      const next = new Set(disabled)
+      if (nextOn) next.delete(owner)
+      else next.add(owner)
+      try {
+        await apiWrite('/config', {
+          patch: { 'tools.disabledPlugins': [...next] },
+          revision: data.configRevision,
+        })
+        showBanner(nextOn ? `已启用「${owner}」的工具` : `已禁用「${owner}」的工具`)
+        rerender()
+      } catch (err) {
+        showBanner(`切换失败：${err?.message ?? err}`, { bad: true })
+      }
+    }
+
     body.push(
       el('div', { class: 'persona-section' }, [
         el('div', { class: 'persona-head' }, [
           el('span', { class: 'persona-title', text: '插件工具' }),
           el('span', { class: 'persona-count', text: `${data.plugins.length} 个` }),
         ]),
-        el(
-          'div',
-          { class: 'tool-chips' },
-          data.plugins.map(t =>
-            toolChip({
-              label: t.name,
-              hint: t.owner ? `来自 ${t.owner}` : '',
-              on: true,
-              disabled: true,
-              onClick: () => {},
-            }),
-          ),
-        ),
-        el('p', {
-          class: 'panel-sub',
-          text: '插件工具在建立会话时挂到模型上；刚注册的要新开一次对话才生效。',
+        ...[...byOwner.entries()].map(([owner, items]) => {
+          const on = !disabled.has(owner)
+          const btn = el('button', {
+            class: 'btn btn-ghost btn-sm',
+            type: 'button',
+            text: on ? '禁用' : '启用',
+          })
+          btn.addEventListener('click', () => toggleOwner(owner, !on))
+          return el('div', { class: 'tool-group' }, [
+            el('div', { class: 'tool-group-head' }, [
+              el('span', { class: 'tool-group-label', text: owner }),
+              on ? null : el('span', { class: 'badge', text: '已禁用' }),
+              btn,
+            ]),
+            el(
+              'div',
+              { class: 'tool-chips' },
+              items.map(t =>
+                toolChip({
+                  label: t.name,
+                  hint: t.description || '',
+                  on,
+                  disabled: true,
+                  onClick: () => {},
+                }),
+              ),
+            ),
+          ])
         }),
       ]),
     )
