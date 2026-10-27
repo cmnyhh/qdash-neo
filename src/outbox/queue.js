@@ -133,7 +133,8 @@ export class Outbox {
         if (typeof this.sendSegments !== 'function') throw new Error('出站队列不支持消息段')
         await this.sendSegments(item.chatKey, item.segments)
       } else {
-        await this.send(item.chatKey, item.text)
+        // 把 meta 一起传下去：`replyTo` 这类发送期参数在它里面
+        await this.send(item.chatKey, item.text, item.meta)
       }
       this.log('debug', `qdash-neo: 出站成功 ${item.chatKey} #${item.id}`)
       this.onSent?.(item)

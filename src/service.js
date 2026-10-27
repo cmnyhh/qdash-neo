@@ -1894,7 +1894,12 @@ export class QdashNeoService {
   createOutbox({ send } = {}) {
     const oc = this.config?.outbound ?? {}
     return new Outbox({
-      send: send ?? ((chatKey, text) => this.client.sendText(chatKey, text)),
+      /**
+       * `meta.replyTo` 是引用回复的目标消息 ID（群聊才有）。
+       * 队列把 meta 一起传进来，这里转成 OneBot 的 reply 段。
+       */
+      send:
+        send ?? ((chatKey, text, meta) => this.client.sendText(chatKey, text, meta?.replyTo)),
       // 消息段（发图/发表情）：同一队列、同一限流，只是载荷从文本换成段数组
       sendSegments: (chatKey, segments) => this.sendSegments(chatKey, segments),
       log: this.log,

@@ -351,7 +351,18 @@ export function renderPrompt(
     const who = it.senderName ? `${it.senderName}(${it.userId})` : it.userId
     const at = it.atMe ? '（@你）' : ''
     const text = String(it.text || (it.hasImage ? imageTag(it) : '')).replace(/\s*\n\s*/g, ' ⏎ ')
-    return `${who}${at}：${text}`
+    /**
+     * 群聊里带消息 ID，模型可以用 `qq_send_message({ reply_to })` 指定回哪一条。
+     *
+     * **只在群聊加**：私聊里对方知道你在回他，引用块纯属噪音；
+     * 而群里同时好几条在滚，不引用根本看不出在回谁。
+     *
+     * 用真实 ID 而不是批内序号：少一层「序号 → ID」的映射，工具参数直接就是
+     * OneBot 认的值。代价是模型可能抄错几位 —— 所以工具那边会校验，
+     * 不在本批里的 ID 直接报错并列出可用的，而不是发一条引用到不存在消息上的消息。
+     */
+    const id = String(it.messageId ?? '').trim()
+    return id ? `[#${id}] ${who}${at}：${text}` : `${who}${at}：${text}`
   }
   /**
    * 标题要跟「有没有人叫它」走。
@@ -404,6 +415,17 @@ export function renderPrompt(
   }
   // 发送方式**无条件**加：关掉语音时它也必须出现，否则模型以为可以直接输出
   parts.push(SEND_HINT)
+
+  /**
+   * 群聊专用：怎么用 `reply_to` 指定回哪一条。
+   *
+   * 「回批里的哪一句」是**内容决策**，不该由系统按"最后一条"替它选。
+   * 但也不能不提 —— 模型不知道 `[#数字]` 是什么，只会当成噪音。
+   */
+  parts.push(
+    '【引用】消息前面的 [#数字] 是消息 ID。想明确回其中某一条，调 qq_send_message 时带' +
+      ' reply_to=<那个数字>；只回其中几条就调几次、各带各的 ID；整体回应就不用带。',
+  )
   // 先决定"说不说"，再决定"怎么说"——语音提示放在收尾之前
   if (canSpeak) parts.push(speakHint('group'))
 

@@ -320,13 +320,27 @@ export class OneBotClient {
   /**
    * @param {string} chatKey 内核的 chatKey（`u:<qq>` / `g:<群号>`）
    * @param {string} text
+   * @param {string} [replyTo] 要引用的消息 ID；只在群聊生效
    */
-  async sendText(chatKey, text) {
+  async sendText(chatKey, text, replyTo) {
     const id = chatKey.slice(2)
     const isGroup = chatKey.startsWith('g:')
+    /**
+     * 引用段必须排在文本前面，否则 QQ 会把它当成正文的一部分。
+     *
+     * **只在群聊加**：私聊里对方知道你在回他，引用块纯属噪音；
+     * 群里同时好几条在滚，不引用看不出在回谁。
+     */
+    const message =
+      isGroup && replyTo
+        ? [
+            { type: 'reply', data: { id: String(replyTo) } },
+            { type: 'text', data: { text } },
+          ]
+        : [{ type: 'text', data: { text } }]
     return this.call(isGroup ? 'send_group_msg' : 'send_private_msg', {
       ...(isGroup ? { group_id: id } : { user_id: id }),
-      message: [{ type: 'text', data: { text } }],
+      message,
     })
   }
 

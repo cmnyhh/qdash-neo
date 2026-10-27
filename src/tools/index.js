@@ -390,7 +390,7 @@ export function createQqTools({
    * 模型可以一次交一段带换行的长文字，由插件决定实际发几条。
    * 返回值里带上真实条数，免得它以为只发了一条又去补发。
    */
-  const sendText = async text => {
+  const sendText = async (text, replyTo) => {
     if (!enqueue) throw new Error('出站队列未就绪')
     const oc = config?.outbound ?? {}
     const plan = planReply(text, {
@@ -421,6 +421,7 @@ export function createQqTools({
      * 每条一个独立 id 的话，界面上就是三句互不相干的话。
      */
     const replyId = `out:${Date.now()}:${sent.count + 1}`
+    const rid = String(replyTo ?? '').trim()
     plan.parts.forEach((part, i) => {
       const qqMsgId = plan.parts.length === 1 ? replyId : `${replyId}:${i + 1}`
       enqueue(chatKey, part, {
@@ -429,6 +430,13 @@ export function createQqTools({
         replyId,
         total: plan.parts.length,
         fullText: plan.text,
+        /**
+         * 引用**只加在第一条**。
+         *
+         * 一段话被拆成三条时，每条都顶上同一个引用块，观感非常吵；
+         * 而第一条已经表明了"在回哪一句"，后面几条自然是接着说的。
+         */
+        ...(i === 0 && rid ? { replyTo: rid } : {}),
       })
     })
     sent.count += plan.parts.length
@@ -445,11 +453,14 @@ export function createQqTools({
       '必须调用本工具才发得出去。想分几条说就调多次，也可以一次交一段带换行的文字、' +
       '由 outbound.split 决定怎么拆（返回值里的 queued 是实际发出条数）。' +
       '不想说话时就不要调它，直接结束这一轮 —— 那是完全正常的。',
-    { text: '要发送的文本' },
+    {
+      text: '要发送的文本',
+      reply_to: '可选：要引用回复的消息 ID。群里就是消息前面的 [#数字]；私聊会忽略',
+    },
     async args => {
       const text = String(args.text ?? '').trim()
       if (!text) throw new Error('text 不能为空')
-      return sendText(text)
+      return sendText(text, args.reply_to)
     },
   )
 

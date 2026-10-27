@@ -182,3 +182,29 @@ test('拍一拍：私聊也能触发，且归到私聊会话', () => {
   assert.equal(ev.chatKey, 'u:123')
   assert.equal(ev.atMe, true)
 })
+
+test('发送：群聊带 replyTo 构造 [reply, text]，私聊忽略引用', async () => {
+  const { client } = makeClient()
+  const calls = []
+  client.call = (action, params) => {
+    calls.push({ action, params })
+    return Promise.resolve({ ok: true })
+  }
+
+  await client.sendText('g:123', '在的', '620459211')
+  assert.equal(calls[0].action, 'send_group_msg')
+  assert.deepEqual(
+    calls[0].params.message,
+    [{ type: 'reply', data: { id: '620459211' } }, { type: 'text', data: { text: '在的' } }],
+    '引用段要排在文本前面，否则 QQ 当成正文的一部分',
+  )
+
+  // 私聊：引用是噪音，对方知道你在回他
+  await client.sendText('u:456', '嗯', '620459211')
+  assert.equal(calls[1].action, 'send_private_msg')
+  assert.deepEqual(calls[1].params.message, [{ type: 'text', data: { text: '嗯' } }])
+
+  // 群聊但不带 replyTo：纯文本
+  await client.sendText('g:123', 'hello')
+  assert.deepEqual(calls[2].params.message, [{ type: 'text', data: { text: 'hello' } }])
+})
