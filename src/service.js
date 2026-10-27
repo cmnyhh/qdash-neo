@@ -175,6 +175,37 @@ export class QdashNeoService {
      */
     this.pluginStorage = new PluginStorage({ getStore: () => this.store, log: this.log })
     this.pluginSettings = new PluginSettings({ getStore: () => this.store, log: this.log })
+    /**
+     * 插件判定器：`judge` 实例在 `start()` 里才建，所以先存着，建好再灌进去。
+     *
+     * 直接暴露 `this.judge` 不行 —— 它在 start 之前是 null，
+     * 插件在那个时机注册会拿到 `Cannot read property of null`，
+     * 而这个错误看起来像"插件写错了"，实际是加载顺序。
+     */
+    /** @type {Array<{ name: string, provider: Function, owner?: string }>} */
+    this.pluginJudges = []
+    this.judgeApi = {
+      /**
+       * @param {{ name: string, provider: Function, owner?: string }} desc
+       *   见 `JudgeChain#registerProvider`
+       */
+      registerProvider: desc => {
+        this.pluginJudges.push(desc)
+        // judge 已经建好就直接注册，不用等重启
+        if (this.judge) {
+          try {
+            return this.judge.registerProvider(desc)
+          } catch (err) {
+            this.log('warn', `qdash-neo: 判定器注册失败 msg=${err?.message}`)
+          }
+        }
+        return () => {
+          const i = this.pluginJudges.indexOf(desc)
+          if (i >= 0) this.pluginJudges.splice(i, 1)
+        }
+      },
+    }
+
     this.storage = {
       /** @param {string} name 插件自己的名字（做格式校验，命名空间 `feature:<name>:`） */
       forFeature: name => this.pluginStorage.forFeature(name),
@@ -232,6 +263,14 @@ export class QdashNeoService {
       log: this.log,
       store: this.store,
     })
+    // 插件在 start() 之前注册的判定器，现在灌进去（之后注册的走 judgeApi 直接生效）
+    for (const d of this.pluginJudges) {
+      try {
+        this.judge.registerProvider(d)
+      } catch (err) {
+        this.log('warn', `qdash-neo: 判定器「${d?.name}」注册失败 msg=${err?.message}`)
+      }
+    }
     // 别名来自配置，登录前就先认一遍；昵称要等 get_login_info
     this.syncBotNames()
     this.router = new SessionRouter(this.ctx, {

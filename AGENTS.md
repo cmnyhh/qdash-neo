@@ -432,7 +432,7 @@ bash scripts/start.sh     # 启动，直接打印带 token 的控制台地址
 | `storage.forFeature` | ✅（KV only，2026-10-27） |
 | `console.registerStatic` | ❌ 未实现（高风险：路径穿越 + CSP） |
 | `fetch` | ❌ 未实现（**建议不做**：插件是可信代码，绕过内核直接用原生 fetch 也行，内核提供它收益≈0 而风险自负） |
-| `judge.registerProvider` | ❌ 未实现（中风险：插件抛错不能拖垮判定链） |
+| `judgeApi.registerProvider` | ✅（2026-10-27）：插件抛错按弃权跳过，不拖垮判定链 |
 
 ## 7. 改文档的纪律
 

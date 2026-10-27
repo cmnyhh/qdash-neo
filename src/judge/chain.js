@@ -23,7 +23,7 @@ import { JudgeParseError, JudgeTimeoutError, llmJudge } from './llm.js'
  *   `defer` = 判定层放弃决定权，交给对话层（只有 `judge.onUnsure='agent'` 会产生）
  * @property {number} score
  * @property {string} reason
- * @property {'heuristic'|'llm'} layer
+ * @property {'heuristic'|'llm'|'plugin'} layer
  * @property {number} [costMs]
  * @property {string} [memory] 模型顺手记下的一句话（只有 llm 层会有）
  */
@@ -54,6 +54,8 @@ export class JudgeChain {
     this.calls = new Map()
     /** @type {Map<string, number>} chatKey → 冷却截止时间（上一次判定失败） */
     this.cooldownUntil = new Map()
+    /** @type {Array<{ name: string, provider: Function, owner: string }>} 插件注册的判定器 */
+    this.providers = []
     this.stats = { total: 0, reply: 0, silent: 0, llmCalls: 0, llmErrors: 0, rateLimited: 0, batched: 0 }
   }
 
@@ -138,6 +140,80 @@ export class JudgeChain {
    *   `personaHint` 是性格摘要：有它时判据从"通用管家"切成"这个角色想不想接话"。
    * @returns {Promise<Judgement>}
    */
+  /**
+   * 注册一个插件判定器。
+   *
+   * @param {{ name: string, provider: Function, owner?: string }} desc
+   *   `provider({ inbound, batch, contextText, heuristic, config })` 返回
+   *   `{ verdict: 'reply'|'silent', score?: number, reason?: string }`，
+   *   或者 `null` / `undefined` 表示**弃权**（继续问下一个）。
+   * @returns {() => void} disposer
+   */
+  registerProvider({ name, provider, owner = '未署名插件' } = {}) {
+    const n = String(name ?? '').trim()
+    if (!n) throw new Error('判定器必须有 name')
+    if (typeof provider !== 'function') throw new Error(`判定器「${n}」必须有 provider 函数`)
+    /**
+     * 保留字：这两层是内核自己的名字。插件用同名会让快照里
+     * 分不清「这条结论是谁给的」，排查时只能靠猜。
+     */
+    if (n === 'heuristic' || n === 'llm' || n === 'plugin') {
+      throw new Error(`判定器名「${n}」是内核保留字`)
+    }
+    if (this.providers.some(p => p.name === n)) {
+      throw new Error(`判定器「${n}」已注册`)
+    }
+
+    const entry = { name: n, provider, owner }
+    this.providers.push(entry)
+    this.log('info', `qdash-neo: 判定器「${n}」已注册（来源：${owner}）`)
+
+    return () => {
+      const i = this.providers.indexOf(entry)
+      if (i >= 0) this.providers.splice(i, 1)
+    }
+  }
+
+  /**
+   * 依次问插件判定器，第一个给出明确结论的算数。
+   *
+   * **插件抛错不能拖垮判定链**：那意味着所有群消息都不回了，
+   * 而日志里只会看到「判定失败」。所以这里一律 catch 掉、记一条 warn、继续问下一个 ——
+   * 一个坏插件最多是"它那一段不起作用"，不该让整个机器人闭嘴。
+   *
+   * @returns {Promise<object|null>} 组装好的 judgement，或 null（全部弃权）
+   */
+  async askProviders({ inbound, contextText = '', batch = null, heuristic: h }) {
+    for (const p of this.providers) {
+      let r
+      try {
+        r = await p.provider({ inbound, batch, contextText, heuristic: h, config: this.config })
+      } catch (err) {
+        this.log(
+          'warn',
+          `qdash-neo: 判定器「${p.name}」抛错，已跳过 name=${err?.name} msg=${err?.message}`,
+        )
+        continue
+      }
+      if (!r) continue
+
+      const verdict = r.verdict === 'reply' || r.verdict === 'silent' ? r.verdict : null
+      // 认不出的结论按弃权处理：宁可继续问下一个，也不要把一句坏返回值当决定
+      if (!verdict) continue
+
+      return {
+        verdict,
+        score: clamp01(r.score, verdict === 'reply' ? 0.7 : 0.3),
+        reason: `判定器 ${p.name}：${
+          String(r.reason ?? '').trim() || (verdict === 'reply' ? '判定可接' : '判定不接')
+        }`,
+        layer: 'plugin',
+        costMs: 0,
+      }
+    }
+    return null
+  }
+
   async decide({ inbound, contextText = '', batch = null, personaHint = '' }) {
     const grouped = Array.isArray(batch) && batch.length > 0
     const h = grouped
@@ -200,6 +276,17 @@ export class JudgeChain {
         meta,
       )
     }
+
+    /**
+     * 插件判定器：在模型之前问一遍。
+     *
+     * 位置放在 `onUnsure` 之后、`available()`/`costGate` 之前，是刻意的：
+     * 那两道闸是给 LLM 层准备的（模型能不能用、今天花超了没），
+     * 而插件判定器通常更便宜 —— 规则表、关键词、本地分类器，不需要模型也不需要配额。
+     * 把它们挡在成本闸外面，等于让"省钱的方案"先被"钱不够"拦住。
+     */
+    const byPlugin = await this.askProviders({ inbound, contextText, batch, heuristic: h })
+    if (byPlugin) return this.commit(inbound, byPlugin, meta)
 
     const usable = this.available()
     if (!usable.ok) {
