@@ -32,5 +32,3 @@ _log/
 # 编辑器 / AI 助手的本地数据（不是项目内容）
 .codebuddy/
 
-# npm 凭据，绝不入库
-.npmrc
