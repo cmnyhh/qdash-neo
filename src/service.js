@@ -2301,6 +2301,19 @@ export class QdashNeoService {
       systemNote:
         this.config?.agent?.promptInMessage === false ? '' : String(this.config?.agent?.systemPrompt ?? '').trim(),
 
+      /**
+       * 已授权的插件引导，**直接拼进 prompt**。
+       *
+       * 早先只写进 `AGENTS.md`，而那条通道实测不通（见 normalize.js 里
+       * `sysBlock` 的注释：baseline 进不了会话记录）。更糟的是——
+       * 即使文件写对了，**已有会话也要重建才读得到**，
+       * 于是"改了引导 → 行为没变"，用户会以为插件没生效。
+       *
+       * 直接拼是同一轮就生效的。
+       */
+      pluginRules: this.pluginInstructions.granted(this.config?.tools?.grantedInstructions ?? [])
+        .map(r => `【来自「${r.owner}」插件】${r.text}`)
+        .join('\n\n'),
       // 主动发言：换一套措辞（"没人叫你，说不出也正常"），普通回复传 null
       proactive: ev.proactive ?? null,
       // 主动发言开着时才教它 `[[LATER:N]]`

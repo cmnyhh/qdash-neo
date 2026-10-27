@@ -194,6 +194,16 @@ export function renderPrompt(
   {
     botName = '机器人', context = null, partial = false, batch = null,
     memory = '', persona = '', deferToAgent = false, sleep = null, systemNote = '',
+    /**
+     * **已授权的插件引导**（拼好的字符串，空 = 没有）。
+     *
+     * 为什么不靠 `AGENTS.md`：见下面 `sysBlock` 的注释 —— 那条通道实测不通
+     * （baseline 进不了会话记录）。而插件引导如果只写文件，
+     * **改了要等会话重建才生效**，用户会以为"改了没用"。
+     *
+     * 直接拼进 prompt 是同一轮就生效的。
+     */
+    pluginRules = '',
     // 主动发言（没有新消息）时传 `{ hint }`，普通回复传 null
     proactive = null,
     // 主动发言开着时才教它 `[[LATER:N]]`：关着还教，它会排期然后到点被静默丢弃
@@ -296,10 +306,24 @@ export function renderPrompt(
           '去翻翻有什么值得说的（热门榜、你感兴趣的区、群里刚聊过的话题），' +
           '看到有意思的就分享出去。',
       '翻完确实都一般，这轮过去就行；但**先去看看** —— 别一睁眼就决定这轮算了。' +
-        '不管分享还是这轮过去，都**不用向群里解释**：要发就发内容，不发就不说话。',
+        '不管分享还是这轮过去，都**不用向群里解释**：要发就发内容，不发就不说话。' +
+        /**
+         * **显式禁止休眠标记。**
+         *
+         * 只"不提供选项"不够：模型会照着对话历史里自己前几轮的输出（那些
+         * `[[SLEEP:60]]`）继续写。它不知道"这一轮没有这个选项"，
+         * 只知道"我以前这么干过"。
+         *
+         * 所以要说破：**这轮没有那个选项**。不想发就什么都不做 —— 沉默本身就是回答。
+         *
+         * 措辞上刻意不写出标记的具体格式，免得反而给它一个可抄的字符串。
+         */
+        '**这一轮没有"休眠"这个选项**：不想发就什么都不做、直接结束，' +
+        '不要输出休眠标记、也不要解释为什么不说。',
       memory,
       persona ? `【你的角色设定｜这是你本人】\n${persona}` : '',
       sysBlock,
+      pluginRules,
       REPLY_HINT,
     ]
       .filter(Boolean)
@@ -366,6 +390,7 @@ export function renderPrompt(
       timeBlock,
       pIntro,
       sysBlock,
+      pluginRules,
       persona ? `【你的角色设定｜这是你本人，不是对方说的话】\n${persona}` : '',
       memory ? `【长期记忆｜你记得的事，不是对方刚说的】\n${memory}` : '',
       SEND_HINT,
