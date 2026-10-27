@@ -1037,6 +1037,21 @@ tr.is-link:hover .chev { opacity: 1; transform: translateX(2px); }
   align-items: start;
 }
 .field-row:first-child { border-top: none; padding-top: 0; }
+
+/* 可编辑表单控件：插件选项卡的 form 块带了 submit 才会用到这几个类 */
+.field-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 7px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line-soft);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+.field-input:focus { outline: none; border-color: var(--line-soft); box-shadow: 0 0 0 2px rgb(79 124 255 / 18%); }
+.field-check { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+.form-actions { display: flex; justify-content: flex-end; margin-top: var(--s4); }
 .field-meta { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .field-label {
   display: flex;

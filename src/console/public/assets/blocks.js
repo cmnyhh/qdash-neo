@@ -157,23 +157,74 @@ function renderBlock(block, ctx) {
   if (!block || typeof block !== 'object') return null
 
   if (block.type === 'form') {
-    // 本轮的表单块是**只读展示**：插件自己的运行层配置（settings.register）还没接，
-    // 假装可编辑而后端不接收，比不可编辑更糟
-    const rows = (block.fields ?? []).map(f =>
-      el('div', { class: 'field-row' }, [
+    /**
+     * 可编辑表单：块上带 `submit` 时才渲染输入控件。
+     *
+     * 不带 `submit` 就维持只读展示 —— 有些 form 块本来就只是展示（比如内核自己的
+     * 只读项），全变成输入框会让"哪些能改"变模糊。
+     *
+     * 提交时按 `path` 把所有字段的当前值收成一个对象交给动作处理函数；
+     * 后端（`tabAction`）原样透传，**插件自己调 `settings.set()` 落库**。
+     * 内核不解析插件的配置结构 —— 否则每加一个插件就要改一次内核。
+     */
+    const editable = Boolean(block.submit) && typeof ctx.onAction === 'function'
+    /** @type {Map<string, () => unknown>} path → 取值函数 */
+    const getters = new Map()
+
+    const rows = (block.fields ?? []).map(f => {
+      const key = String(f.path ?? f.label ?? '')
+      let control
+
+      if (!editable) {
+        control = el('span', { class: 'field-static' }, formatValue(f.value, f.type))
+      } else if (f.type === 'boolean') {
+        const box = el('input', { type: 'checkbox' })
+        box.checked = f.value === true
+        getters.set(key, () => box.checked)
+        control = el('label', { class: 'field-check' }, [box])
+      } else if (f.type === 'number') {
+        const input = el('input', { class: 'field-input', type: 'number', value: f.value ?? '' })
+        // 空串转成 0 而不是 NaN：后者 JSON 序列化成 null，插件那边会读出 null
+        getters.set(key, () => {
+          const n = Number(input.value)
+          return Number.isFinite(n) ? n : 0
+        })
+        control = input
+      } else {
+        const input = el('input', { class: 'field-input', type: 'text', value: f.value ?? '' })
+        getters.set(key, () => input.value)
+        control = input
+      }
+
+      return el('div', { class: 'field-row' }, [
         el('div', { class: 'field-meta' }, [
           el('span', { class: 'field-label', text: f.label || f.path }),
           f.description ? el('span', { class: 'field-desc', text: f.description }) : null,
         ]),
-        el('div', { class: 'field-control' }, [
-          el('span', { class: 'field-static' }, formatValue(f.value, f.type)),
-        ]),
-      ]),
+        el('div', { class: 'field-control' }, [control]),
+      ])
+    })
+
+    const body = rows.length ? rows.slice() : [empty({ title: '没有可展示的字段' })]
+
+    if (editable) {
+      const btn = el('button', { class: 'btn', type: 'button' }, [
+        icon('check'),
+        el('span', { text: block.submit.label || '保存' }),
+      ])
+      btn.addEventListener('click', () => {
+        const values = {}
+        for (const [k, get] of getters) values[k] = get()
+        ctx.onAction(ctx.tabId, block.submit.id, btn, { values })
+      })
+      body.push(el('div', { class: 'form-actions' }, [btn]))
+    }
+
+    return blockShell(
+      block,
+      body,
+      el('span', { class: `pill${editable ? '' : ' is-plain'}`, text: editable ? '可编辑' : '只读' }),
     )
-    return blockShell(block, rows.length ? rows : empty({ title: '没有可展示的字段' }), el('span', {
-      class: 'pill is-plain',
-      text: '只读',
-    }))
   }
 
   if (block.type === 'table') {

@@ -749,8 +749,19 @@ export function applyToolPolicy(
    */
   const kernelNames = new Set(created.defs.map(d => d.name))
   const pluginNames = []
+  /**
+   * 按插件关工具。
+   *
+   * `allowPluginTools` 是总闸：一个插件的工具做危险操作，关掉它等于把**所有**插件
+   * 的工具一起摘掉。这里按 owner 逐个关，别的插件不受影响。
+   */
+  const blockedPlugins = new Set((config?.tools?.disabledPlugins ?? []).map(String))
   if (pluginTools && config?.tools?.allowPluginTools !== false) {
     for (const d of pluginTools.defs()) {
+      if (blockedPlugins.has(String(d.owner ?? ''))) {
+        log('info', `qdash-neo: 插件「${d.owner}」的工具已按配置禁用，跳过 ${d.name}`)
+        continue
+      }
       if (kernelNames.has(d.name)) {
         log('warn', `qdash-neo: 插件工具 ${d.name} 与内核同名，已跳过（内核优先）`)
         continue

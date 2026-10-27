@@ -98,9 +98,15 @@ export class PluginToolRegistry {
     }
   }
 
-  /** 归一化后的工具定义（给 `applyToolPolicy` 挂载用） */
+  /**
+   * 归一化后的工具定义（给 `applyToolPolicy` 挂载用）。
+   *
+   * 带上 `owner`：挂载时要按插件名过滤（`tools.disabledPlugins`），
+   * 只给一份 `defs()` 而不带来源的话，那个过滤就没法做。
+   * DSH 的 `tools.register` 会忽略不认识的字段，多这一个没影响。
+   */
   defs() {
-    return [...this.items.values()].map(v => v.def)
+    return [...this.items.values()].map(v => ({ ...v.def, owner: v.owner }))
   }
 
   /** @param {string} name */

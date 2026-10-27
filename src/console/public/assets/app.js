@@ -2130,12 +2130,21 @@ function renderTab(data, tabId) {
     ])
   }
 
-  const onAction = async (id, actionId, button) => {
+  /**
+   * 触发选项卡里的动作。
+   *
+   * `body` 是可选的：`actions` 块只要确认，`form` 块提交时要把字段值一起带上
+   * （键是 `path`，值是控件里的当前值）。动作处理函数拿到的就是这份 body。
+   */
+  const onAction = async (id, actionId, button, body) => {
     const original = button.textContent
     button.disabled = true
     button.textContent = '执行中…'
     try {
-      const res = await apiWrite(`/tabs/${encodeURIComponent(id)}/actions/${encodeURIComponent(actionId)}`, {})
+      const res = await apiWrite(
+        `/tabs/${encodeURIComponent(id)}/actions/${encodeURIComponent(actionId)}`,
+        body ?? {},
+      )
       showBanner(res.result === undefined ? '已执行' : `已执行：${clip(JSON.stringify(res.result), 120)}`)
     } catch (err) {
       showBanner(err.message, { bad: true })

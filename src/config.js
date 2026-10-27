@@ -171,6 +171,18 @@ export async function createConfig() {
       allowPluginTools: Schema.boolean()
         .default(true)
         .description('允许插件注册的工具挂到会话上（关掉则插件工具对模型不可见）'),
+      /**
+       * 按插件关闭工具。
+       *
+       * 和 `allowPluginTools` 的区别：那个是总闸（一个插件的工具出问题就得全关），
+       * 这个是逐个关 —— 某个插件的工具做危险操作，摘掉它一个就行，
+       * 别的插件不受影响。
+       *
+       * 填的是插件的 `owner`（注册工具时传的名字，默认「未署名插件」）。
+       */
+      disabledPlugins: Schema.array(Schema.string())
+        .default([])
+        .description('按插件名禁用其全部工具（多个用逗号或换行分隔）；填 `undefined` 形式的名字不对，用注册时的 owner'),
       adminOwners: Schema.array(Schema.string())
         .default([])
         .description(

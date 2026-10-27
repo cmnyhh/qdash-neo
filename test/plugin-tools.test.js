@@ -178,3 +178,36 @@ test('插件工具：与内核同名时内核优先，插件那份被跳过', ()
   assert.equal(hits.length, 1, '只能有一个，且必须是内核那份')
   assert.notEqual(hits[0].description, '假的', '插件不能顶掉内核工具')
 })
+
+test('插件工具：可以按插件禁用，不影响别的插件', () => {
+  const tools = fakeTools()
+  const reg = mkReg()
+  reg.register({ name: 'a_tool', description: 'a', owner: 'plugin-a', execute: async () => ({}) })
+  reg.register({ name: 'b_tool', description: 'b', owner: 'plugin-b', execute: async () => ({}) })
+
+  applyToolPolicy(tools, {
+    chatKey: 'g:1',
+    config: { tools: { enabled: true, disabledPlugins: ['plugin-a'] }, policy: {} },
+    deps: {},
+    pluginTools: reg,
+  })
+
+  const names = tools.registered.map(d => d.name)
+  assert.ok(!names.includes('a_tool'), 'plugin-a 的工具要被摘掉')
+  assert.ok(names.includes('b_tool'), '别的插件不受影响 —— 这正是它和 allowPluginTools 的区别')
+  assert.ok(!tools.allow.includes('a_tool'))
+  assert.ok(tools.allow.includes('b_tool'))
+})
+
+test('插件工具：disabledPlugins 为空时全部照常挂载', () => {
+  const tools = fakeTools()
+  const reg = mkReg()
+  reg.register({ name: 'x', description: 'x', owner: 'p', execute: async () => ({}) })
+  applyToolPolicy(tools, {
+    chatKey: 'g:1',
+    config: { tools: { enabled: true }, policy: {} },
+    deps: {},
+    pluginTools: reg,
+  })
+  assert.ok(tools.registered.some(d => d.name === 'x'))
+})
