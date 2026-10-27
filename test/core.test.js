@@ -827,7 +827,7 @@ test('主动发言：只在开启时才教它排期（关着教了也白教）',
   assert.ok(renderPrompt(ev, { canSchedule: true }).includes('[[LATER:'))
 })
 
-test('主动发言的 prompt：必须明确"没人叫你，说不出也正常"', () => {
+test('主动发言的 prompt：正面说"去看看"，不要巡检腔', () => {
   const ev = {
     kind: 'group',
     chatKey: 'g:1',
@@ -837,10 +837,24 @@ test('主动发言的 prompt：必须明确"没人叫你，说不出也正常"',
     text: '',
     ts: Date.now(),
   }
-  const p = renderPrompt(ev, { proactive: { hint: '那个部署的事' } })
-  assert.match(p, /没有新消息/)
-  assert.match(p, /完全正常/, '不能写成"该你说点什么"——那会逼它硬找话题')
-  assert.match(p, /那个部署的事/, '备忘要带回来，否则它不记得当初为什么排期')
+
+  /**
+   * **"没有新消息"这套措辞全部删掉了。**
+   *
+   * 它们把主动唤起框成例行公事，模型于是把自己当巡检员：
+   * 醒了 → 看一眼 → "没情况" → `[[SLEEP]]`，还在群里汇报
+   * "我照规矩闭喙休眠"。
+   */
+  const self = renderPrompt(ev, { proactive: { hint: '' } })
+  assert.equal(self.includes('没有新消息'), false, '不要巡检腔')
+  assert.equal(self.includes('到点了'), false, '不要"到点了"这种被动措辞')
+  assert.match(self, /去翻翻|去转转/, '要正面引导它先去看')
+  assert.match(self, /先去看看/, '要强调"先看"，而不是一睁眼就决定这轮算了')
+
+  // 插件带任务时，任务本身出现在最前面
+  const withHint = renderPrompt(ev, { proactive: { hint: '你去 B 站逛逛' } })
+  assert.match(withHint, /你去 B 站逛逛/, '任务要出现在最前面')
+  assert.equal(withHint.includes('没有新消息'), false)
 })
 
 test('记忆姿态：热聊时标明"只是背景"，冷场时才是"可以提的话头"', () => {

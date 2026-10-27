@@ -167,12 +167,16 @@ export class QdashNeoService {
      */
     this.laterTimers = new Map()
     /**
-     * 正在进行的「主动唤起」轮次：chatKey 集合。
+     * 最近一次主动唤起的时间：chatKey → 时间戳。
      *
-     * 唯一用途是让 `onSleep` 分清两种"睡"：
-     * 主动唤起时说睡 = 这轮没东西可发，**不能**把群静音。
+     * **不用 `Set` 而用时间戳**，因为 `onSleep` 和 `deliver` 的时序不可靠：
+     * `attachSessionEvents` 的回调可能在 `deliver` 返回**之后**才触发，
+     * 那时"进行中的集合"已经被 `finally` 清空了 —— 判断必然失效（实测过）。
+     *
+     * 所以改成**时间窗口**：主动唤起后一段时间内，任何 `[[SLEEP]]` 都丢弃。
+     * 这样不依赖任何时序假设。
      */
-    this.proactiveTurn = new Set()
+    this.proactiveRecent = new Map()
     /** 主动评估计数：chatKey → { day, n }，用于每日上限（内存级即可） */
     this.proactiveUsed = new Map()
     /** 沉睡时长范围（**秒**），由配置决定，用于夹住模型给的数值 */
@@ -641,10 +645,26 @@ export class QdashNeoService {
        */
       onSleep: (chatKey, minutes) => {
         this.stats.silent += 1
-        if (this.proactiveTurn.has(chatKey)) {
+        /**
+         * **主动唤起（及紧接其后的一段时间）里，`[[SLEEP]]` 一律丢弃。**
+         *
+         * 为什么用时间窗口而不是"进行中的集合"：`onSleep` 由会话事件触发，
+         * 可能在 `deliver()` 返回之后才来 —— 那时集合已经被 `finally` 清空，
+         * 判断必然落空（实测：睡眠照样被写进库）。
+         *
+         * 窗口 90 秒：够覆盖一次模型调用 + 事件回调的延迟，又远小于一次
+         * 定时唤起间隔，不会误伤"群友聊天时它想安静一会儿"。
+         */
+        const lastProactive = this.proactiveRecent.get(chatKey) ?? 0
+        const withinProactive = Date.now() - lastProactive < 90_000
+        console.log(
+          `qdash-neo: onSleep ${chatKey} ${minutes}s ` +
+            `withinProactive=${withinProactive}（${Math.round((Date.now() - lastProactive) / 1000)}s 前）`,
+        )
+        if (withinProactive) {
           this.log(
             'info',
-            `qdash-neo: ${chatKey} 主动唤起时选择不发（不进入沉睡，正常聊天不受影响）`,
+            `qdash-neo: ${chatKey} 主动唤起后要求沉睡，已忽略（正常聊天不受影响）`,
           )
           return
         }
@@ -1650,6 +1670,26 @@ export class QdashNeoService {
    */
   async openProactive(chatKey, { hint = '' } = {}) {
     /**
+     * 诊断：**谁在唤起。**
+     *
+     * 出现过"每隔一两分钟就被唤起一次"的现象，而 `openProactive` 只有两个
+     * 调用点（`scheduleLater` 回调、定时插件）。打一行调用栈就能分清是哪个
+     * —— 没有这行只能猜。
+     *
+     * 用 console.log 而不是 this.log：info 级在 DSH 里看不到。
+     */
+    try {
+      const stack = String(new Error().stack ?? '')
+        .split('\n')
+        .slice(2, 5)
+        .map(s => s.trim().replace(/^at\s+/, ''))
+        .join(' ← ')
+      console.log(`qdash-neo: openProactive ${chatKey} hint="${hint.slice(0, 40)}" from ${stack}`)
+    } catch {
+      /* 诊断失败不该影响唤起 */
+    }
+
+    /**
      * **闸门被拦时要返回原因，不能静默 return。**
      *
      * 早先这里是 `log('info', …) + return`，而 info 级在 DSH 里看不到 ——
@@ -1701,15 +1741,25 @@ export class QdashNeoService {
      * 于是模型醒来看到"没有新消息"，只能再说一次 `[[SLEEP:N]]`：
      * 日志里连续几条都是"睡"，像在空转。
      *
-     * 沉睡是模型自己表达过的意图（"我现在不想说话"），
-     * 主动通道应该尊重它 —— 睡醒之后下一轮再来。
+     * **但主动唤起应该打破沉睡，不是被它挡住。**
+     *
+     * 两种状态说的不是一回事：
+     *
+     *   - `[[SLEEP:N]]` = "群里有人在聊，我这会儿不想接话"
+     *   - 主动唤起      = "我自己到点想看看有什么可分享的"
+     *
+     * 后者是**新的刺激**（手上有新内容），凭什么被前者挡住？
+     * 早先这里直接 `return`，结果定时任务撞上睡眠期就白跑一趟，
+     * 而模型睡醒后还是什么都没有 —— 两头空。
+     *
+     * 所以先清掉睡眠再唤起：它醒了、看了内容、决定发不发。
+     * 决定不发也不会再睡回去（`onSleep` 对主动唤起不落睡眠）。
      */
     if (this.isSleeping(chatKey)) {
       const until = this.sleepUntil.get(chatKey) ?? 0
       const at = until ? new Date(until).toLocaleTimeString('zh-CN', { hour12: false }) : '?'
-      const reason = `正在沉睡（到 ${at}）`
-      this.log('info', `qdash-neo: ${chatKey} ${reason}，跳过本次主动唤起`)
-      return { ok: false, skipped: 'sleeping', reason }
+      this.log('info', `qdash-neo: ${chatKey} 正在沉睡（到 ${at}），主动唤起把它叫醒`)
+      this.clearSleep(chatKey)
     }
 
     const isGroup = chatKey.startsWith('g:')
@@ -1736,11 +1786,31 @@ export class QdashNeoService {
      * 用 `finally` 清 —— `deliver` 抛错也不能把标记漏在那儿，
      * 否则下一轮正常聊天里的 `[[SLEEP:N]]` 会被误判成主动唤起、睡不成了。
      */
-    this.proactiveTurn.add(chatKey)
+    /**
+     * 记下"刚主动唤起过"（时间戳，不用删除 —— 窗口自然过期）。
+     *
+     * `onSleep` 靠这个时间差判断：主动唤起后 90 秒内的 `[[SLEEP]]` 一律丢弃。
+     */
+    this.proactiveRecent.set(chatKey, Date.now())
+    /**
+     * 兜底：主动唤起这一轮**不允许留下睡眠**。
+     *
+     * 时间窗口已经能挡住绝大多数情况，但 `deliver()` 返回后事件回调可能还在路上，
+     * 所以出口再看一眼：如果这轮期间睡眠变新了，撤销。
+     *
+     * 两道闸互相独立 —— 一道看时间差，一道看前后状态。
+     */
+    const sleepBefore = this.sleepUntil.get(chatKey) ?? 0
     try {
       await this.deliver(ev)
     } finally {
-      this.proactiveTurn.delete(chatKey)
+      const sleepAfter = this.sleepUntil.get(chatKey) ?? 0
+      if (sleepAfter > sleepBefore && sleepAfter > Date.now()) {
+        this.clearSleep(chatKey)
+        console.log(
+          `qdash-neo: 主动唤起结束后撤销睡眠 ${chatKey}（${Math.round((sleepAfter - Date.now()) / 1000)}s）`,
+        )
+      }
     }
     return { ok: true }
   }
@@ -2203,8 +2273,23 @@ export class QdashNeoService {
        * 两种情况都必须给模型一个表达沉默的方式，否则它只能被迫回一句。
        */
       deferToAgent: this.gates.groupTrigger === 'agent' || judgement?.verdict === 'defer',
-      // 随机沉睡：把范围告诉模型，由它自己决定睡多久（null = 这个功能没开）
-      sleep: this.sleepEnabled ? { min: this.sleepMin, max: this.sleepMax } : null,
+      /**
+       * 随机沉睡：把范围告诉模型，由它自己决定睡多久（null = 不给这个选项）。
+       *
+       * **主动唤起时不给。**
+       *
+       * `[[SLEEP:N]]` 的语义是"我在这个群暂时不想说话" —— 前提是**有人正跟它说话**。
+       * 而定时唤起（B 站那种）是"系统叫你来看看"，它根本不在对话里，
+       * 说"睡"没有意义：什么都不发就是全部意思。
+       *
+       * 实测过的后果：B 站插件每跑一次，它必输出 `[[SLEEP:60]]`。
+       * 60 还是**旧默认值**（现在范围是 30~600），说明它在照抄记忆里那句
+       * "本助手仅 [[SLEEP:60]]" —— **不给选项，就抄不出来**。
+       *
+       * 主动唤起时它仍然有 `[[SILENT]]` 可用（见 `deferToAgent`），
+       * 那才是"这轮没什么可说的"的正确表达。
+       */
+      sleep: this.sleepEnabled && !ev.proactive ? { min: this.sleepMin, max: this.sleepMax } : null,
 
       /**
        * 用户的「系统要求」直接拼进 prompt。
