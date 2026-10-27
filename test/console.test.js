@@ -19,7 +19,7 @@ import { test } from 'node:test'
 
 import { ConfigStore } from '../src/config/runtime.js'
 import { Persona } from '../src/persona/index.js'
-import { SESSION_COOKIE, resolvePassword } from '../src/console/auth.js'
+import { SESSION_COOKIE, resolvePassword, setPassword } from '../src/console/auth.js'
 import { ConsoleServer } from '../src/console/server.js'
 import { Store } from '../src/store/db.js'
 
@@ -522,7 +522,7 @@ test('控制台：store 未就绪是 503（不是 500，也不能假装成功）
   }
 })
 
-test('控制台口令：配置优先；留空时首启生成并落 kv，重启不变', () => {
+test('控制台口令：配置优先；都没配时等用户首次设置，设完重启不变', () => {
   const dir = mkdtempSync(join(tmpdir(), 'qdn-token-'))
   const store = new Store(join(dir, 't.db'))
   try {
@@ -530,13 +530,23 @@ test('控制台口令：配置优先；留空时首启生成并落 kv，重启�
     assert.equal(fromConfig.source, 'config')
     assert.equal(fromConfig.password, 'explicit')
 
-    const first = resolvePassword({ store, config: { console: { password: '' } } })
-    assert.equal(first.source, 'generated')
-    assert.ok(first.password.length >= 16)
+    /**
+     * 都不配时**不再自动生成** —— 返回 unset，由首次访问的人自己设。
+     *
+     * 原来的做法是生成随机口令打进启动日志，但大部分人不看日志，
+     * 于是控制台对他们等于不存在。
+     */
+    const unset = resolvePassword({ store, config: { console: { password: '' } } })
+    assert.equal(unset.source, 'unset')
+    assert.equal(unset.password, '', '空口令表示"还没设"，不是"空密码可登录"')
 
-    const second = resolvePassword({ store, config: { console: { password: '' } } })
-    assert.equal(second.source, 'kv')
-    assert.equal(second.password, first.password, '重启后口令必须一样，否则每次都要重新登录')
+    // 用户设完之后，重启也不变
+    setPassword(store, 'my-pass-123')
+    const after = resolvePassword({ store, config: { console: { password: '' } } })
+    assert.equal(after.source, 'kv')
+    assert.equal(after.password, 'my-pass-123', '重启后口令必须一样，否则每次都要重新登录')
+
+    assert.throws(() => setPassword(store, 'short'), /至少/, '太短的口令要拒')
   } finally {
     store.close()
     rmSync(dir, { recursive: true, force: true })
@@ -900,5 +910,68 @@ test('配置描述：provider/model 字段带 optionsFrom 标记（候选值由�
     assert.equal(fields.every(f => f.optionsFrom === null || typeof f.optionsFrom === 'string'), true)
   } finally {
     await h.dispose()
+  }
+})
+
+/* ---------------- 首次设置 ---------------- */
+
+test('首次访问：口令未设时跳 /setup，设完能登录', async () => {
+  const h = await harness({ consoleConfig: { password: '' } })
+  try {
+    // 首页跳设置页 —— 不是登录页，用户不可能知道口令（我们不生成随机口令了）
+    const r1 = await h.request('/qdash-neo/')
+    assert.equal(r1.status, 302)
+    assert.match(String(r1.headers.location), /\/qdash-neo\/setup$/)
+
+    const r2 = await h.request('/qdash-neo/setup')
+    assert.equal(r2.status, 200)
+    assert.match(r2.text, /首次设置/)
+    assert.match(r2.text, /至少 8 位/)
+
+    // API 在未设置时给 409（前端据此引导），不是 401
+    const r3 = await h.request('/qdash-neo/api/overview')
+    assert.equal(r3.status, 409)
+    assert.equal(r3.json?.error?.code, 'setup-required')
+
+    // 太短的口令被拒
+    const r4 = await h.request('/qdash-neo/api/setup', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: { password: 'short' },
+    })
+    assert.equal(r4.status, 400)
+
+    const r5 = await h.request('/qdash-neo/api/setup', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: { password: 'my-pass-123' },
+    })
+    assert.equal(r5.status, 200)
+    assert.equal(r5.json?.ok, true)
+
+    // 设置完必须失效 —— 否则它就是个免登录的改口令后门
+    const r6 = await h.request('/qdash-neo/setup')
+    assert.equal(r6.status, 302)
+    assert.match(String(r6.headers.location), /\/login$/)
+
+    const r7 = await h.request('/qdash-neo/api/setup', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: { password: 'another-pass' },
+    })
+    // 已设置后 /api/setup 不再是"特殊路径"，落到正常鉴权：未登录 → 401。
+    // 关键是它**不能**再把口令改掉（下面用新口令登录验证）
+    assert.equal(r7.status, 401, '/api/setup 只对未设置状态开放')
+    assert.notEqual(r7.json?.ok, true)
+
+    // 新口令能登录
+    const r8 = await h.request('/qdash-neo/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: { username: 'admin', password: 'my-pass-123' },
+    })
+    assert.equal(r8.status, 200)
+  } finally {
+    h.dispose?.()
   }
 })

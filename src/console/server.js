@@ -37,6 +37,8 @@ import {
   readSessionId,
   resolvePassword,
   sessionCookieHeader,
+  setPassword,
+  MIN_PASSWORD_LEN,
   tokenMatches,
 } from './auth.js'
 import { TabRegistry } from './tabs.js'
@@ -72,6 +74,85 @@ const PUBLIC_STATIC = new Set([
 const MAX_BODY_BYTES = 64 * 1024
 
 const TAB_ACTION_RE = /^\/api\/tabs\/([^/]+)\/actions\/([^/]+)$/
+
+/**
+ * 首次设置页。
+ *
+ * 内联而不是放进 `public/`：它只在「口令还没设过」这一种状态下出现一次，
+ * 为它加一个静态文件、再改 `isPublicStatic` 白名单，反而多两处要同步的地方。
+ *
+ * 表单提交走 `api/setup`（相对路径），所以挂载点改前缀时这里不用跟着改。
+ */
+const SETUP_HTML = `<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>首次设置 · qdash-neo</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 15px/1.6 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+         display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0;
+         background: #f6f7f9; color: #1a1a1a; }
+  @media (prefers-color-scheme: dark) { body { background: #14161a; color: #e6e6e6; } }
+  form { width: min(420px, 92vw); padding: 28px; border-radius: 12px; background: #fff;
+         box-shadow: 0 2px 16px rgb(0 0 0 / 8%); }
+  @media (prefers-color-scheme: dark) { form { background: #1e2126; box-shadow: none; } }
+  h1 { font-size: 19px; margin: 0 0 6px; }
+  p.hint { margin: 0 0 18px; color: #666; font-size: 13px; }
+  @media (prefers-color-scheme: dark) { p.hint { color: #999; } }
+  label { display: block; font-size: 13px; margin: 14px 0 6px; color: #444; }
+  @media (prefers-color-scheme: dark) { label { color: #bbb; } }
+  input { width: 100%; box-sizing: border-box; padding: 9px 11px; border-radius: 8px;
+          border: 1px solid #d0d4da; font-size: 15px; background: transparent; color: inherit; }
+  @media (prefers-color-scheme: dark) { input { border-color: #333a44; } }
+  button { width: 100%; margin-top: 20px; padding: 11px; border: 0; border-radius: 8px;
+           background: #2c6ef2; color: #fff; font-size: 15px; cursor: pointer; }
+  button:disabled { opacity: .6; cursor: default; }
+  #err { min-height: 20px; margin: 10px 0 0; color: #d33; font-size: 13px; }
+</style>
+</head>
+<body>
+<form id="f" autocomplete="off">
+  <h1>首次设置</h1>
+  <p class="hint">这台 qdash-neo 还没有控制台口令。请自行设定一个，之后用它登录。</p>
+
+  <label for="p">口令（至少 ${MIN_PASSWORD_LEN} 位）</label>
+  <input id="p" type="password" minlength="${MIN_PASSWORD_LEN}" required autofocus>
+
+  <label for="c">再输一次</label>
+  <input id="c" type="password" minlength="${MIN_PASSWORD_LEN}" required>
+
+  <button id="b" type="submit">保存并进入</button>
+  <p id="err" role="alert"></p>
+</form>
+<script>
+  var f = document.getElementById('f'), b = document.getElementById('b'), e = document.getElementById('err')
+  f.addEventListener('submit', async function (ev) {
+    ev.preventDefault()
+    e.textContent = ''
+    var p = document.getElementById('p').value
+    var c = document.getElementById('c').value
+    if (p !== c) { e.textContent = '两次输入不一致'; return }
+    if (p.length < ${MIN_PASSWORD_LEN}) { e.textContent = '口令太短'; return }
+    b.disabled = true
+    try {
+      var r = await fetch('api/setup', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ password: p }),
+      })
+      var j = await r.json().catch(function () { return {} })
+      if (r.ok) { location.replace(j.redirect || 'login'); return }
+      e.textContent = (j.error && j.error.message) || ('设置失败（HTTP ' + r.status + '）')
+    } catch (err) {
+      e.textContent = '连不上服务，检查一下宿主是否还在运行'
+    }
+    b.disabled = false
+  })
+</script>
+</body>
+</html>`
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -313,6 +394,43 @@ export class ConsoleServer {
       return
     }
 
+    /**
+     * 首次使用：口令还没设过。
+     *
+     * 只放行设置页与设置接口，其余一律跳过去。**必须放在登录判断之前** ——
+     * 否则用户会被引到登录页，而那里他不可能知道口令（我们不再生成随机口令了）。
+     *
+     * 这么设计是因为「大部分人不看启动日志」：他们通过面板装插件，
+     * 根本不知道日志在哪，于是控制台对他们等于不存在。
+     */
+    if (this.#needsSetup()) {
+      if (sub === '/setup') {
+        await this.#handleSetup(req, res, method)
+        return
+      }
+      if (sub === '/api/setup') {
+        await this.#handleSetupPost(req, res, method)
+        return
+      }
+      if (isPublicStatic(sub)) {
+        this.#serveStatic(req, res, sub, method)
+        return
+      }
+      if (sub.startsWith('/api')) {
+        this.#json(res, 409, {
+          ok: false,
+          error: { code: 'setup-required', message: '首次使用，请先设置控制台口令' },
+          setupUrl: `${this.mount}/setup`.replace(/\/{2,}/g, '/'),
+        })
+        return
+      }
+      res.statusCode = 302
+      res.setHeader('Location', `${this.mount}/setup`.replace(/\/{2,}/g, '/'))
+      res.setHeader('Cache-Control', 'no-store')
+      res.end()
+      return
+    }
+
     // 登录页本身免鉴权，否则鸡生蛋
     if (sub === '/login') {
       await this.#handleLogin(req, res, method)
@@ -446,6 +564,82 @@ export class ConsoleServer {
    * @param {import('node:http').ServerResponse} res
    * @param {string} method
    */
+  /** 口令还没设过（首次使用）。空口令 = unset，不是"空密码可登录" */
+  #needsSetup() {
+    const info = this.passwordInfoOrResolve()
+    return !String(info?.password ?? '').trim()
+  }
+
+  /**
+   * 首次设置页。
+   *
+   * 页面本身再判一次 `#needsSetup()`：两个人同时打开设置页时，
+   * 后提交的那个必须被挡掉 —— 否则它能把你刚设的口令改掉。
+   *
+   * @param {import('node:http').IncomingMessage} req
+   * @param {import('node:http').ServerResponse} res
+   * @param {string} method
+   */
+  async #handleSetup(req, res, method) {
+    if (!this.#needsSetup()) {
+      res.statusCode = 302
+      res.setHeader('Location', `${this.mount}/login`.replace(/\/{2,}/g, '/'))
+      res.setHeader('Cache-Control', 'no-store')
+      res.end()
+      return
+    }
+    if (method === 'HEAD') {
+      res.statusCode = 200
+      res.end()
+      return
+    }
+    if (method !== 'GET') {
+      res.setHeader('Allow', 'GET, HEAD')
+      this.#json(res, 405, { ok: false, error: { code: 'method-not-allowed', message: '设置页只接受 GET' } })
+      return
+    }
+    res.statusCode = 200
+    res.setHeader('Content-Type', 'text/html; charset=utf-8')
+    res.setHeader('Cache-Control', 'no-store')
+    res.setHeader('X-Content-Type-Options', 'nosniff')
+    res.end(SETUP_HTML)
+  }
+
+  /**
+   * 提交新口令。
+   *
+   * @param {import('node:http').IncomingMessage} req
+   * @param {import('node:http').ServerResponse} res
+   * @param {string} method
+   */
+  async #handleSetupPost(req, res, method) {
+    if (!this.#needsSetup()) {
+      this.#json(res, 409, {
+        ok: false,
+        error: { code: 'already-setup', message: '口令已经设置过了，请直接登录' },
+      })
+      return
+    }
+    if (method !== 'POST') {
+      res.setHeader('Allow', 'POST')
+      this.#json(res, 405, { ok: false, error: { code: 'method-not-allowed', message: '只接受 POST' } })
+      return
+    }
+
+    const body = await this.#readBody(req)
+    try {
+      setPassword(this.service?.store ?? null, String(body.password ?? ''))
+    } catch (err) {
+      this.#json(res, 400, { ok: false, error: { code: 'bad-password', message: String(err?.message ?? err) } })
+      return
+    }
+
+    // 清缓存：下一次解析就走 kv，不再走 unset 分支
+    this.passwordInfo = null
+    this.log('info', 'qdash-neo: 控制台口令已由用户在首次设置页设定')
+    this.#json(res, 200, { ok: true, redirect: `${this.mount}/login`.replace(/\/{2,}/g, '/') })
+  }
+
   async #handleLogin(req, res, method) {
     if (method === 'GET' || method === 'HEAD') {
       if (this.#isAuthed(req)) {

@@ -92,13 +92,21 @@ function mountConsole(ctx, server, log) {
       .then(port => {
         log('info', `qdash-neo: 控制台已监听 ${server.listenHost}:${port} —— 打开 ${server.announceUrl()}`)
         const info = server.passwordInfoOrResolve()
-        if (info.source === 'generated') {
-          // 生成的这一刻是运维唯一一次能看到明文的机会：之后只存在 kv 里
-          log('info', `qdash-neo: 控制台登录口令（用户 ${server.config?.console?.username ?? 'admin'}）= ${info.password}`)
-        } else if (info.source === 'memory') {
-          log('warn', `qdash-neo: 控制台口令无法落库，本次生效（重启会变）= ${info.password}`)
+        if (info.source === 'unset') {
+          /**
+           * 还没设口令：**首次访问时由用户自己设**，不再生成随机口令。
+           *
+           * 原来会生成一串 hex 打进日志，但大部分人不会去看日志（他们通过面板装插件，
+           * 根本不知道日志在哪），于是控制台对他们等于不存在。
+           */
+          log(
+            'info',
+            `qdash-neo: 控制台尚未设置口令，首次打开 ${server.announceUrl()} 会让你自行设定`,
+          )
+        } else if (info.source === 'config') {
+          log('info', 'qdash-neo: 控制台口令来自配置（console.password）')
         } else {
-          log('info', 'qdash-neo: 控制台口令来自配置或已存在于 kv，不再重复打印')
+          log('info', 'qdash-neo: 控制台口令已设定过，不再重复打印')
         }
       })
       .catch(err => {

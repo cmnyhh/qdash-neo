@@ -51,19 +51,49 @@ export function resolvePassword({ store = null, config = null, log = () => {} } 
   const configured = String(config?.console?.password ?? '').trim()
   if (configured) return { password: configured, source: 'config' }
 
-  if (!store) return { password: randomBytes(16).toString('hex'), source: 'memory' }
+  if (!store) return { password: '', source: 'unset' }
 
   try {
     const saved = String(store.kvGet(PASSWORD_KEY, '') ?? '').trim()
     if (saved) return { password: saved, source: 'kv' }
-    const password = randomBytes(16).toString('hex')
-    store.kvSet(PASSWORD_KEY, password)
-    return { password, source: 'generated' }
+    /**
+     * **不再自动生成随机口令。**
+     *
+     * 原来的做法是生成一串 16 字节 hex 打进启动日志，让用户去搜。问题是：
+     * 大部分人不会去看日志（他们通过面板装插件、压根不知道日志在哪），
+     * 于是"控制台"对他们等于不存在。
+     *
+     * 现在改成 `unset`：首次访问时放行一个设置页，让用户**自己定**。
+     * 窗口期风险由监听地址兜住 —— `console.host` 默认 `127.0.0.1`，
+     * 只有本机能访问到设置页。
+     */
+    return { password: '', source: 'unset' }
   } catch (err) {
-    // 读不到 kv 不该让控制台整个挂掉，但必须留痕（否则表现为"口令每次重启都变"）
-    log('warn', `qdash-neo: 控制台口令落库失败 name=${err?.name} msg=${err?.message}`)
-    return { password: randomBytes(16).toString('hex'), source: 'memory' }
+    // 读不到 kv 不该让控制台整个挂掉，但必须留痕
+    log('warn', `qdash-neo: 控制台口令读取失败 name=${err?.name} msg=${err?.message}`)
+    return { password: '', source: 'unset' }
   }
+}
+
+/** 口令最短长度。8 位是底线，再短就是"随便一猜就中" */
+export const MIN_PASSWORD_LEN = 8
+
+/**
+ * 首次设置口令。
+ *
+ * 只在 `resolvePassword()` 返回 `unset` 时可用 —— 调用方负责判断，
+ * 因为这个函数本身不知道当前是不是首次（它只负责写）。
+ *
+ * @param {object} store
+ * @param {string} password
+ * @returns {string} 设好的口令
+ */
+export function setPassword(store, password) {
+  if (!store?.kvSet) throw new Error('存储未就绪，无法保存口令')
+  const p = String(password ?? '')
+  if (p.length < MIN_PASSWORD_LEN) throw new Error(`口令至少 ${MIN_PASSWORD_LEN} 位`)
+  store.kvSet(PASSWORD_KEY, p)
+  return p
 }
 
 /** `a=1; b=2` → `{a:'1', b:'2'}`；坏值跳过，不抛 */

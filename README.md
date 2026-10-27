@@ -34,7 +34,7 @@ npx dsh --profile web --patch node_modules/qdash-neo/cordis.patch.yml
 
 ### 3. 配置
 
-打开控制台 `http://127.0.0.1:7800/`（用户名 `admin`；口令打印在宿主启动日志中，可搜索「控制台登录口令」）。
+打开控制台 `http://127.0.0.1:7800/`（用户名 `admin`）。首次访问会要求**自行设定**控制台口令，之后用它登录；也可在 `cordis.patch.yml` 里预置 `console.password` 跳过这一步。
 
 至少需要填写以下三项：
 
