@@ -227,11 +227,32 @@ export function renderPrompt(
    *
    * @param {'group'|'private'} place
    */
+  /**
+   * 发送方式。**每轮 user message 都必须带，和无条件的东西绑在一起。**
+   *
+   * 早先这句写在 `speakHint` 里，而 `speakHint` 只 `canSpeak` 为真时才会被调用 ——
+   * 关掉语音（默认就是关）时，这条唯一的说明也跟着消失了。于是模型只看到
+   * 「想说话就调 qq_send_message」这类条件式措辞，理解成可选，然后默认直接输出正文。
+   *
+   * 而正文不会被发送（`onAssistant` 只落库，state=unforwarded），
+   * 表现就是"它明明回了，QQ 里什么也没有"。
+   */
+  const SEND_HINT =
+    '【发送方式】你的话只能通过 qq_send_message 发出去 —— 直接输出的正文不会被发送，对方看不到。'
+
+  /**
+   * 语音建议。**只提内核自己的 `qq_send_voice`。**
+   *
+   * 早先这里还写着「如果工具清单里有 `qq_speak`，也可以把一句话直接说出口」——
+   * 那是**插件**注册的工具，内核不该知道它叫什么、在不在。写成"如果工具清单里有"
+   * 这种含糊措辞，等于让模型去猜一个内核根本不掌握的事实。
+   *
+   * 合成类工具怎么用、什么场合用，由插件在自己的工具 description 里说明。
+   */
   const speakHint = place =>
     '【说话方式】大多数时候用 qq_send_message 打字。语音只留给「一两句话就说完、' +
     '而且语气本身比字面更重要」的场合 —— 比如道个晚安、笑着怼一句、感慨一下。' +
-    '想发语音时：库里有现成的音频就用 qq_send_voice；如果工具清单里有 qq_speak，' +
-    '也可以把一句话直接说出口。' +
+    '库里已经有现成的音频时，用 qq_send_voice 发出去。' +
     (place === 'group'
       ? '群里人多、在谈正事、或者要说的话偏长，就继续打字。'
       : '说正事或者内容偏长时，也继续打字。')
@@ -272,8 +293,17 @@ export function renderPrompt(
       sysBlock,
       persona ? `【你的角色设定｜这是你本人，不是对方说的话】\n${persona}` : '',
       memory ? `【长期记忆｜你记得的事，不是对方刚说的】\n${memory}` : '',
+      SEND_HINT,
       canSpeak ? speakHint('private') : '',
       pbody,
+      /**
+       * 紧贴用户消息后面再说一次。
+       *
+       * 模型对**结尾**最敏感：同一句话放在开头容易当成背景说明，
+       * 放在最后才像是"你现在该做什么"。这是同一约束的两处冗余，
+       * 不是重复啰嗦 —— 少了任何一处都试过不生效。
+       */
+      '【回复方式】把要说的话放进 qq_send_message 的 text 参数里调用它。直接输出的文字不会到达对方。',
     ]
       .filter(Boolean)
       .join('\n\n')
@@ -337,6 +367,8 @@ export function renderPrompt(
         '想聊就聊，不想聊就看着 —— 不用每句都有价值。',
     )
   }
+  // 发送方式**无条件**加：关掉语音时它也必须出现，否则模型以为可以直接输出
+  parts.push(SEND_HINT)
   // 先决定"说不说"，再决定"怎么说"——语音提示放在收尾之前
   if (canSpeak) parts.push(speakHint('group'))
 
@@ -430,5 +462,8 @@ export function renderPrompt(
         `注意单位是**秒**，不是分钟。这段时间不会推送任何消息，也不用解释原因。`,
     )
   }
+  // 和私聊一样，在**最后**再说一次发送方式：模型对结尾最敏感
+  parts.push('【回复方式】把要说的话放进 qq_send_message 的 text 参数里调用它。直接输出的文字不会到达对方。')
+
   return parts.join('\n')
 }
