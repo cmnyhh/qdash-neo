@@ -236,7 +236,18 @@ function openPasswordDialog() {
 
 /* ---------------- 取数 ---------------- */
 
-const MOUNT = location.pathname.replace(/\/index\.html$/, '').replace(/\/$/, '')
+/**
+ * 挂载前缀（`''` 或 `/qdash-neo` 这种）。
+ *
+ * **不能从 `location.pathname` 推。** 控制台是单页应用：用户点进 `/chats`、
+ * `/config` 之后按 F5，`pathname` 就是 `/chats`，于是接口跟着变成
+ * `/chats/api/overview` —— 服务端没这个路由，兜底吐 `index.html`，
+ * 前端拿到 200 + HTML，报「响应不是预期的 JSON（HTTP 200，通常是路径或反向代理
+ * 指到了别的服务）」。那条错误提示会把人引去查 nginx，而根因在这里。
+ *
+ * 从脚本自己的 URL 推是稳定的：`<mount>/assets/app.js` 的前缀不随路由变。
+ */
+const MOUNT = new URL(import.meta.url).pathname.replace(/\/assets\/app\.js$/, '')
 const state = {
   meta: null,
   route: null,
