@@ -1,6 +1,6 @@
 {
   "name": "@cmnyhh/qdash-neo",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "把 QQ 接进 DSH 的宿主插件：OneBot v11 入站 → ctx.agents 会话 → session/event 出站",
   "type": "module",
   "main": "src/index.js",
