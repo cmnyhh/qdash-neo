@@ -195,7 +195,37 @@ function renderBlock(block, ctx) {
     /** 草稿键带 tabId：两个选项卡有同名字段时互不干扰 */
     const draftKey = path => `${ctx.tabId ?? ''}|${path}`
 
-    const rows = (block.fields ?? []).map(f => {
+    /** 后端给的初始值 */
+    const initialByPath = new Map((block.fields ?? []).map(f => [f.path, f.value]))
+
+    /**
+     * 某个字段的**当前**值：草稿优先，其次初始值。
+     *
+     * `when` 判断必须用当前值，否则用户把协议切成 gpt-sovits 之后，
+     * 页面还按后端的旧值（openai）渲染，他会以为"切换没生效"。
+     */
+    const currentOf = path => {
+      const dk = draftKey(String(path))
+      return formDrafts.has(dk) ? formDrafts.get(dk) : initialByPath.get(path)
+    }
+
+    /**
+     * `when: { path: 'protocol', in: ['openai'] }` —— 条件字段。
+     *
+     * 一个插件经常有多种模式（openai / gpt-sovits / custom），各自参数完全不同。
+     * 全平铺出来用户会看到一堆"不知道该填什么"的框，其中一半在他那个模式下
+     * 根本不生效。按条件过滤掉比加一段说明文字有用得多。
+     */
+    const visible = (block.fields ?? []).filter(f => {
+      const w = f.when
+      if (!w || typeof w !== 'object') return true
+      const cur = currentOf(w.path)
+      if (Array.isArray(w.in)) return w.in.includes(cur)
+      if ('is' in w) return cur === w.is
+      return true
+    })
+
+    const rows = visible.map(f => {
       const key = String(f.path ?? f.label ?? '')
       const dk = draftKey(key)
       /**
@@ -225,6 +255,26 @@ function renderBlock(block, ctx) {
           return Number.isFinite(n) ? n : 0
         })
         control = input
+      } else if (Array.isArray(f.options) && f.options.length) {
+        /**
+         * 下拉选择。`options: [{ value, label }]`。
+         *
+         * 变化后立刻**整块重绘**：`when` 条件基于当前值判断，
+         * 不重绘的话用户切了协议，下面的字段还是上一组的 —— 看着像没生效。
+         */
+        const sel = el('select', { class: 'field-input' })
+        for (const o of f.options) {
+          const value = String(o?.value ?? o)
+          const opt = el('option', { value, text: String(o?.label ?? value) })
+          if (String(initial) === value) opt.selected = true
+          sel.append(opt)
+        }
+        sel.addEventListener('change', () => {
+          formDrafts.set(dk, sel.value)
+          ctx.rerender?.()
+        })
+        getters.set(key, () => sel.value)
+        control = sel
       } else if (f.type === 'password') {
         /**
          * 密码框：API key、token 这类不该在页面上明文躺着。

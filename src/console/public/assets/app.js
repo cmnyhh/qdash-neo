@@ -2278,7 +2278,19 @@ function renderTab(data, tabId) {
 
   return el('div', { class: 'page' }, [
     pageHead(tab.title, tab.owner ? `来自 ${tab.owner}` : '插件选项卡', null),
-    el('div', { class: 'cfg-grid' }, renderBlocks(tab.layout, { onAction, tabId })),
+    /**
+     * 把 `rerender` 交给 blocks：下拉改变时要整块重绘，
+     * 否则按 `when` 条件算出的字段组不会跟着协议切换更新。
+     */
+    el(
+      'div',
+      { class: 'cfg-grid' },
+      renderBlocks(tab.layout, {
+        onAction,
+        tabId,
+        rerender: () => loadRoute({ quiet: true, force: true }),
+      }),
+    ),
   ])
 }
 
