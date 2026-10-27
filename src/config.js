@@ -254,7 +254,7 @@ export async function createConfig() {
       allowAbsolutePath: Schema.boolean()
         .default(false)
         .description('允许用绝对路径发任意本地音频；默认只从语音库目录取（防 prompt injection 读任意文件）'),
-    }).description('语音库（默认关）'),
+    }).description('语音发送（内核的开关与限制；TTS 合成本身在插件选项卡里，默认关）'),
 
     proactive: Schema.object({
       enabled: Schema.boolean().default(false).description('允许模型排期后主动开口（默认关）'),
