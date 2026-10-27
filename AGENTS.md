@@ -48,7 +48,7 @@ docs/qdash-neo/          ← 设计文档，唯一真相源（7 个文件，先�
   01-DSH-插件对接.md       DSH 插件契约（manifest/生命周期/会话/事件/审批/路由/配置）
   02-OneBot与SnowLuma对接.md  OneBot v11 落地 + 原项目踩过的坑
   03-内核实现要点.md       pipeline/session/outbox/store 怎么写
-  04-插件开发规范.md       ★ 插件作者必读：能力面、控制台选项卡、准入
+  （插件开发规范已迁至 qdash-neo-plugins 仓库：docs/plugin-development.md）
   05-施工计划.md           M0–M4，细化到文件与验收命令
 
 probe/                   ← M0 探针包（qdn-probe v8），验证 DSH 运行时能力
@@ -386,10 +386,13 @@ bash scripts/start.sh     # 启动，直接打印带 token 的控制台地址
 
 - [x] 语音插件的两个能力面：`ctx.qdashNeo.tools.register()`（插件注册工具）与
       `ctx.qdashNeo.voice.send()`（插件产出的音频交主框架安全发送）。
-      TTS 已搬进 `examples/qdash-neo-plugin-voice`，主框架保留 `qq_send_voice` / `qq_voice_list` 与全部防护
+      TTS 已迁至 `qdash-neo-plugins` 仓库的 `packages/qdash-neo-plugin-voice`，主框架保留 `qq_send_voice` / `qq_voice_list` 与全部防护
 - [ ] custom iframe 选项卡（要动 CSP）
 - [ ] 插件失败页（现在挂载失败只记日志 + `status().console.error`）
-- [ ] `feature_*` 表隔离与插件卸载
+- [ ] **`outbox` 门面**（插件发文本/图片的入口）—— 现在插件只能发语音，
+      想做"定时提醒发一条文字"这类插件发不出去。内核的 `enqueueOut` /
+      `enqueueSegmentsOut` 已经做了分条、限流、落库与死信，差的只是暴露出来
+- [ ] `feature_*` 表隔离与插件卸载（storage 目前只有 KV，这张待办实际已缩小为"卸载时清 KV"）
 - [ ] SSE 推送（控制台现在是轮询）
 - [ ] 插件运行层 settings（form 块现在只读）
 

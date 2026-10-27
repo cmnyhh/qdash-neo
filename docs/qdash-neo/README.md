@@ -10,7 +10,7 @@
 | [01-DSH-插件对接.md](./01-DSH-插件对接.md) | DSH 插件体系的真实契约：manifest、生命周期、会话、事件、审批、路由、配置 | 内核开发 |
 | [02-OneBot与SnowLuma对接.md](./02-OneBot与SnowLuma对接.md) | OneBot v11 落地细节与原项目踩过的坑 | 内核开发 |
 | [03-内核实现要点.md](./03-内核实现要点.md) | 用真实 API 重写 pipeline / session / outbox / store | 内核开发 |
-| [04-插件开发规范.md](./04-插件开发规范.md) | **社区与内置功能插件的完整规范**：程序形态、控制台选项卡、配置声明、准入 | 插件作者（必读） |
+| [04-插件开发规范](https://github.com/cmnyhh/qdash-neo-plugins/blob/main/docs/plugin-development.md) | **已迁至 `qdash-neo-plugins`**（连同 TTS 插件一起）。插件生态不属于内核仓库、准入 | 插件作者（必读） |
 | [AGENTS.md](../../AGENTS.md) | 项目交接书：给任何新接手的 agent/人看的状态与纪律 | 新接手者（先看这个） |
 | [05-施工计划.md](./05-施工计划.md) | M0–M4 细化到文件与验收命令 | 所有人 |
 

@@ -29,8 +29,7 @@
     "test": "node --test test/core.test.js test/judge.test.js test/memory-daily.test.js test/outbox.test.js test/config.test.js test/tabs.test.js test/client.test.js test/persona-cards.test.js test/instructions.test.js test/tools-catalog.test.js test/tools.test.js test/service.test.js test/console.test.js test/host.test.js test/voice.test.js test/plugin-tools.test.js test/plugin-storage.test.js test/plugin-judge.test.js",
     "console": "node scripts/console-standalone.mjs",
     "check": "node --check src/index.js",
-    "prepack": "node --check src/index.js && node --check src/service.js",
-    "test:plugin": "node --test examples/qdash-neo-plugin-voice/test/tts.test.js"
+    "prepack": "node --check src/index.js && node --check src/service.js"
   },
   "dsh": {
     "bundle": {
