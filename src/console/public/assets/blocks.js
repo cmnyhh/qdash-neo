@@ -225,6 +225,17 @@ function renderBlock(block, ctx) {
           return Number.isFinite(n) ? n : 0
         })
         control = input
+      } else if (f.type === 'password') {
+        /**
+         * 密码框：API key、token 这类不该在页面上明文躺着。
+         *
+         * 注意它**不是安全措施** —— 值一样在 DOM 里，能开控制台的就能看到。
+         * 它只是避免"配置页开着的时候被人一眼瞄到"，并且防止误截图。
+         */
+        const input = el('input', { class: 'field-input', type: 'password', value: initial ?? '' })
+        input.addEventListener('input', () => formDrafts.set(dk, input.value))
+        getters.set(key, () => input.value)
+        control = input
       } else {
         const input = el('input', { class: 'field-input', type: 'text', value: initial ?? '' })
         input.addEventListener('input', () => formDrafts.set(dk, input.value))
