@@ -29,6 +29,7 @@ import { syncInstructions } from './session/instructions.js'
 import { applyToolPolicy, parseChatKey } from './tools/index.js'
 import { SessionRouter } from './session/router.js'
 import { Store } from './store/db.js'
+import { PluginOutbox } from './plugin/outbox.js'
 import { PluginSettings } from './plugin/settings.js'
 import { PluginStorage } from './plugin/storage.js'
 import { PluginToolRegistry } from './plugin/tools.js'
@@ -219,6 +220,26 @@ export class QdashNeoService {
     this.settings = {
       /** @param {object} opts 见 `PluginSettings#register` */
       register: opts => this.pluginSettings.register(opts),
+    }
+
+    /**
+     * 出站门面：插件发文本 / 图片的唯一入口。
+     *
+     * 走的是和模型完全相同的队列（`enqueueOut` / `enqueueSegmentsOut`），
+     * 所以分条、限流、死信、落库、控制台可见性全都自动生效 —— 插件绕不过去。
+     *
+     * 来源标记由 `forPlugin(name)` 在闭包里定死，插件不能覆盖：
+     * 审计里要能分清「这条是模型发的还是插件发的」。
+     */
+    this.pluginOutbox = new PluginOutbox({
+      deliver: {
+        text: (key, text, meta) => this.enqueueOut(key, text, meta),
+        segments: (key, segments, meta) => this.enqueueSegmentsOut(key, segments, meta),
+      },
+    })
+    this.outboxApi = {
+      /** @param {string} plugin 插件自己的名字 @returns {{ sendText: Function, sendSegments: Function }} */
+      forPlugin: plugin => this.pluginOutbox.forPlugin(plugin),
     }
     /** @type {{ userId?: string, nickname?: string }|null} 登录信息，用来拼"机器人的称呼" */
     this.login = null

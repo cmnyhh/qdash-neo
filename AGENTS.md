@@ -389,9 +389,9 @@ bash scripts/start.sh     # 启动，直接打印带 token 的控制台地址
       TTS 已迁至 `qdash-neo-plugins` 仓库的 `packages/qdash-neo-plugin-voice`，主框架保留 `qq_send_voice` / `qq_voice_list` 与全部防护
 - [ ] custom iframe 选项卡（要动 CSP）
 - [ ] 插件失败页（现在挂载失败只记日志 + `status().console.error`）
-- [ ] **`outbox` 门面**（插件发文本/图片的入口）—— 现在插件只能发语音，
-      想做"定时提醒发一条文字"这类插件发不出去。内核的 `enqueueOut` /
-      `enqueueSegmentsOut` 已经做了分条、限流、落库与死信，差的只是暴露出来
+- [x] **`outbox` 门面** ✅ 2026-10-27：`outboxApi.forPlugin(name).sendText/sendSegments`。
+      走内核队列（分条、限流、死信、落库全生效），来源标记 `plugin:<name>` 由闭包定死、
+      插件不能覆盖 —— 审计里要分得清「模型发的」还是「插件发的」
 - [ ] `feature_*` 表隔离与插件卸载（storage 目前只有 KV，这张待办实际已缩小为"卸载时清 KV"）
 - [ ] SSE 推送（控制台现在是轮询）
 - [ ] 插件运行层 settings（form 块现在只读）
