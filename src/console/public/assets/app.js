@@ -239,13 +239,17 @@ function openPasswordDialog() {
 /**
  * 挂载前缀（`''` 或 `/qdash-neo` 这种）。
  *
- * **不能从 `location.pathname` 推。** 控制台是单页应用：用户点进 `/chats`、
- * `/config` 之后按 F5，`pathname` 就是 `/chats`，于是接口跟着变成
- * `/chats/api/overview` —— 服务端没这个路由，兜底吐 `index.html`，
- * 前端拿到 200 + HTML，报「响应不是预期的 JSON（HTTP 200，通常是路径或反向代理
- * 指到了别的服务）」。那条错误提示会把人引去查 nginx，而根因在这里。
+ * 从脚本自身 URL 推，而不是 `location.pathname`。
  *
- * 从脚本自己的 URL 推是稳定的：`<mount>/assets/app.js` 的前缀不随路由变。
+ * **当前路由是 hash 模式**（`#/chats`），所以 `pathname` 一直停在挂载点上，
+ * 用 `pathname` 推也能得到正确值 —— 这是它一直没出问题的原因，不是它写对了。
+ *
+ * 之所以改：一旦路由换成 history 模式（`/chats` 这种），`pathname` 就跟着变，
+ * `MOUNT` 会算成 `/chats`，所有接口变成 `/chats/api/...`。服务端没这个路由，
+ * 兜底返回 `index.html`（200 + HTML），前端报「响应不是预期的 JSON」。
+ *
+ * 那种故障只在"改了路由实现"之后才出现，排查的人不会想到是挂载前缀算错了 ——
+ * 所以趁现在把依赖去掉。`<mount>/assets/app.js` 的前缀不随路由变。
  */
 const MOUNT = new URL(import.meta.url).pathname.replace(/\/assets\/app\.js$/, '')
 const state = {
