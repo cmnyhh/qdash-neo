@@ -30,6 +30,8 @@ import { applyToolPolicy, parseChatKey } from './tools/index.js'
 import { SessionRouter } from './session/router.js'
 import { Store } from './store/db.js'
 import { appendFileSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
+import { isAbsolute } from 'node:path'
 
 import { PluginEvents } from './plugin/events.js'
 import { PluginOutbox } from './plugin/outbox.js'
@@ -599,13 +601,46 @@ export class QdashNeoService {
    */
   async sendSegments(chatKey, segments) {
     const t = parseChatKey(chatKey)
+    const prepared = await this.localizeSegments(segments)
     if (t.kind === 'group') {
-      return this.client.call('send_group_msg', { group_id: t.groupId, message: segments })
+      return this.client.call('send_group_msg', { group_id: t.groupId, message: prepared })
     }
     if (t.kind === 'private') {
-      return this.client.call('send_private_msg', { user_id: t.userId, message: segments })
+      return this.client.call('send_private_msg', { user_id: t.userId, message: prepared })
     }
     throw new Error(`无法识别的会话 ${chatKey}`)
+  }
+
+  /**
+   * 把消息段里的**本地绝对路径**换成 `base64://`。
+   *
+   * **NapCat 不一定和我们在同一台机器上。** `ws://huhufox.love:7777` 这种远程地址，
+   * 它读不到 `/opt/...` 下的文件 —— 消息会进死信、重试三次后静默丢弃。
+   *
+   * 症状特别误导人：TTS 合成成功（缓存里有 wav）、`qq_speak` 返回 `ok`、
+   * 数据库里落了一条 `[语音] …`，**但对方什么也没收到**。
+   * 而 `dead` 状态只在库里，日志里那句 error 又看不到。
+   *
+   * 只处理绝对路径：`http(s)://`、`base64://`、相对路径原样透传 —— 那些
+   * 本来就是给 NapCat 的引用（远程 URL 或它自己认的相对名）。
+   */
+  async localizeSegments(segments) {
+    const out = []
+    for (const seg of segments ?? []) {
+      const file = seg?.data?.file
+      if (typeof file !== 'string' || !isAbsolute(file)) {
+        out.push(seg)
+        continue
+      }
+      try {
+        const buf = await readFile(file)
+        out.push({ ...seg, data: { ...seg.data, file: `base64://${buf.toString('base64')}` } })
+      } catch (err) {
+        this.log('warn', `qdash-neo: 读附件失败，原样发送 ${file} msg=${err?.message}`)
+        out.push(seg)
+      }
+    }
+    return out
   }
 
   /**
