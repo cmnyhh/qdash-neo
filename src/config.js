@@ -396,11 +396,22 @@ export async function createConfig() {
       password: Schema.string()
         .role('secret')
         .default('')
-        .description('登录口令（同时用于脚本的 Bearer）；留空则首启生成并落库，启动日志会打印出来'),
+        .description('登录口令（同时用于脚本的 Bearer）；留空则首次访问时由你在设置页自行设定'),
       sessionHours: Schema.natural().default(12).description('登录会话有效期（小时，滑动续期）'),
+      /**
+       * Host 白名单。
+       *
+       * 这层防的是 **DNS rebinding**：恶意站点把自己的域名解析到 127.0.0.1，
+       * 借同源策略读本机控制台的响应。`['*']` 等于关掉这道防线，
+       * 换来的是"反代时不用手动加域名"。
+       *
+       * 默认全开是因为大部分人不做反代、也不知道该往里加什么，
+       * 而把域名填错的后果是 403 + 一句看不懂的提示。代价由两道兜住：
+       * 控制台有口令，且免登录的 `/setup` 自己校验 Origin。
+       */
       allowedHosts: Schema.array(Schema.string())
-        .default([])
-        .description('额外 Host 白名单（默认仅本机）'),
+        .default(['*'])
+        .description('Host 白名单；`*` = 放行任意 Host（默认）。改成具体域名可恢复 DNS rebinding 防护'),
       pollMs: Schema.natural().default(5000).description('前端轮询间隔（毫秒，最小 1000）'),
     }).description('控制台（独立端口 + 登录鉴权）'),
 

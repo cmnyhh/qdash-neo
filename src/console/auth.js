@@ -280,7 +280,21 @@ export function hostAllowed(req, allowedHosts = []) {
   const name = hostName(req.headers?.host)
   if (!name) return false
   if (LOOPBACK_HOSTS.has(name)) return true
-  return (allowedHosts ?? []).some(h => String(h).trim().toLowerCase() === name)
+
+  const list = (allowedHosts ?? []).map(h => String(h).trim().toLowerCase())
+  /**
+   * `*` = 放行任意 Host。
+   *
+   * 这层校验防的是 **DNS rebinding**：恶意站点把自己的域名解析到 127.0.0.1，
+   * 借同源策略读本机控制台的响应。放行 `*` 等于关掉这道防线，
+   * 换来的便利是"反代时不用手动加域名"。
+   *
+   * 代价可以接受的前提是：控制台**有口令**，且免登录入口（`/setup`）
+   * 自己做了跨站校验 —— 后者在 `#handleSetupPost` 里。
+   */
+  if (list.includes('*')) return true
+
+  return list.some(h => h === name)
 }
 
 /**

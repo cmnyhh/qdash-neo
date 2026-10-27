@@ -91,6 +91,15 @@ function mountConsole(ctx, server, log) {
       .start()
       .then(port => {
         log('info', `qdash-neo: 控制台已监听 ${server.listenHost}:${port} —— 打开 ${server.announceUrl()}`)
+        // Host 全开时明说一句：这层放开了 DNS rebinding 防护
+        if ((server.config?.console?.allowedHosts ?? []).map(String).includes('*')) {
+          log(
+            'warn',
+            'qdash-neo: 控制台 Host 白名单为 *（放行任意 Host）。反代时免配置，但放弃了 DNS rebinding 防护；' +
+              '想恢复就把它改成具体域名',
+          )
+        }
+
         const info = server.passwordInfoOrResolve()
         if (info.source === 'unset') {
           /**

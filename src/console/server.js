@@ -626,6 +626,34 @@ export class ConsoleServer {
       return
     }
 
+    /**
+     * 跨站提交校验。
+     *
+     * `allowedHosts` 默认全开（`*`），DNS rebinding 的防线只剩这一道：
+     * 浏览器发跨站请求时**一定**带 `Origin`，而它不会等于当前 Host；
+     * curl / 脚本不带 `Origin`，放行 —— 它们本来就是可信调用方。
+     *
+     * 没有这道的话，"未设口令 + Host 全开"等于把控制台交给任意网页。
+     */
+    const origin = String(req.headers?.origin ?? '').trim()
+    if (origin) {
+      const host = String(req.headers?.host ?? '').trim()
+      let sameOrigin = false
+      try {
+        sameOrigin = new URL(origin).host === host
+      } catch {
+        sameOrigin = false
+      }
+      if (!sameOrigin) {
+        this.log('warn', `qdash-neo: 拒绝跨站设置口令 origin=${origin} host=${host}`)
+        this.#json(res, 403, {
+          ok: false,
+          error: { code: 'cross-origin', message: '拒绝跨站请求；请在控制台页面上操作' },
+        })
+        return
+      }
+    }
+
     const body = await this.#readBody(req)
     try {
       setPassword(this.service?.store ?? null, String(body.password ?? ''))

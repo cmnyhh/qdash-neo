@@ -136,16 +136,13 @@ location /qdash-neo/ {
 }
 ```
 
-同时在 `cordis.patch.yml` 里放行这个域名：
-
-```yaml
-console:
-  allowedHosts: ['example.com']
-```
-
 然后访问 `https://example.com/qdash-neo/`。
 
-**`Host` 和 `X-Forwarded-Proto` 两个头都要传**：少了第一个会被 403 拒绝（提示「Host 不在白名单」），少了第二个在 HTTPS 下 cookie 不带 `Secure`，浏览器可能拒存。
+`console.allowedHosts` 默认是 `['*']`（放行任意 Host），所以反代**不需要额外配置**。
+
+**`X-Forwarded-Proto` 必须传**：少了它在 HTTPS 下 cookie 不带 `Secure`，浏览器可能拒存，表现是「登录成功但立刻跳回登录页」。
+
+> `allowedHosts` 这层原本防的是 DNS rebinding（恶意站点把自己的域名解析到 `127.0.0.1`）。默认全开是为了免配置，代价由两道兜住：控制台有口令，且首次设置的提交会校验 `Origin`。如果你有固定域名，把它填进去可以恢复这层防护。
 
 ## 常见问题
 

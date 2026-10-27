@@ -19,7 +19,7 @@ import { test } from 'node:test'
 
 import { ConfigStore } from '../src/config/runtime.js'
 import { Persona } from '../src/persona/index.js'
-import { SESSION_COOKIE, resolvePassword, setPassword } from '../src/console/auth.js'
+import { SESSION_COOKIE, hostAllowed, resolvePassword, setPassword } from '../src/console/auth.js'
 import { ConsoleServer } from '../src/console/server.js'
 import { Store } from '../src/store/db.js'
 
@@ -971,6 +971,41 @@ test('首次访问：口令未设时跳 /setup，设完能登录', async () => {
       body: { username: 'admin', password: 'my-pass-123' },
     })
     assert.equal(r8.status, 200)
+  } finally {
+    h.dispose?.()
+  }
+})
+
+/* ---------------- Host 白名单与跨站设置 ---------------- */
+
+test('Host 白名单：* 放行任意，具体域名只认自己', () => {
+  const req = host => ({ headers: { host } })
+  assert.equal(hostAllowed(req('127.0.0.1:7800'), []), true, '回环永远放行')
+  assert.equal(hostAllowed(req('localhost:7800'), []), true)
+  assert.equal(hostAllowed(req('evil.com'), []), false, '空列表只放行回环')
+  assert.equal(hostAllowed(req('evil.com'), ['*']), true, '* 全开')
+  assert.equal(hostAllowed(req('a.com'), ['b.com']), false)
+  assert.equal(hostAllowed(req('a.com'), ['A.com']), true, '大小写不敏感')
+  assert.equal(hostAllowed(req('a.com'), [' a.com ']), true, '两侧空白要容忍')
+})
+
+test('首次设置：跨站 Origin 被拒，同源放行', async () => {
+  const h = await harness({ consoleConfig: { password: '' } })
+  try {
+    const bad = await h.request('/qdash-neo/api/setup', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: 'https://evil.com' },
+      body: { password: 'my-pass-123' },
+    })
+    assert.equal(bad.status, 403, 'Host 全开时，这道是唯一挡 DNS rebinding 的')
+    assert.equal(bad.json?.error?.code, 'cross-origin')
+
+    const good = await h.request('/qdash-neo/api/setup', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: `http://127.0.0.1:${h.server.port}` },
+      body: { password: 'my-pass-123' },
+    })
+    assert.equal(good.status, 200, '同源提交要放行')
   } finally {
     h.dispose?.()
   }
