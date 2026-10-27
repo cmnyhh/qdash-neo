@@ -191,3 +191,52 @@ test('选项卡：clear 一次清空并通知', () => {
   assert.equal(reg.size, 0)
   assert.equal(called, 1)
 })
+
+/* ---------------- form 的可编辑标记 ---------------- */
+
+test('form 块：带 submit 必须透传，否则前端永远只读', () => {
+  const { reg } = make()
+  reg.register({
+    id: 'voice',
+    title: '语音库',
+    owner: 'p',
+    layout: [
+      {
+        type: 'form',
+        title: '可编辑',
+        fields: [{ path: 'endpoint', label: '地址', type: 'string', value: 'http://x' }],
+        submit: { id: 'save', label: '保存' },
+      },
+      {
+        type: 'form',
+        title: '只读',
+        fields: [{ path: 'b', label: 'B', type: 'string', value: 'w' }],
+      },
+    ],
+  })
+
+  const layout = reg.list()[0].layout
+  assert.equal(
+    layout[0].submit?.id,
+    'save',
+    'submit 被规范化丢掉的话，blocks.js 只会渲染静态文本，面板上永远是「只读」',
+  )
+  assert.equal(layout[0].submit?.label, '保存')
+  assert.equal(layout[1].submit, undefined, '不带 submit 的仍维持只读')
+})
+
+test('form 块：submit.id 为空或非法时当作只读，不报错', () => {
+  const { reg } = make()
+  reg.register({
+    id: 'v2',
+    title: 'T',
+    owner: 'p',
+    layout: [
+      { type: 'form', fields: [{ path: 'a', label: 'A' }], submit: { id: '   ' } },
+      { type: 'form', fields: [{ path: 'b', label: 'B' }], submit: 'not-an-object' },
+    ],
+  })
+  const layout = reg.list()[0].layout
+  assert.equal(layout[0].submit, undefined)
+  assert.equal(layout[1].submit, undefined)
+})

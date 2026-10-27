@@ -194,7 +194,6 @@ export class TabRegistry {
 
     const title = block.title == null ? '' : String(block.title)
     if (type === 'form') {
-      // 本轮的表单是**只读展示**：插件自己的运行层配置还没接（下一轮做 settings.register）
       const fields = Array.isArray(block.fields) ? block.fields : []
       if (fields.length > MAX_ROWS) fail(`${where}的 fields 超过上限 ${MAX_ROWS}`)
       const clean = fields.map((f, i) => {
@@ -207,7 +206,23 @@ export class TabRegistry {
           description: String(f.description ?? ''),
         }
       })
-      return { type, title, fields: clean }
+
+      /**
+       * 带 `submit` 的才是**可编辑**表单，不带就维持只读展示。
+       *
+       * **必须在这里透传**：`blocks.js` 靠 `block.submit` 决定渲染输入框还是静态文本。
+       * 这一层早先只返回 `fields`，于是插件写了 `submit` 也白写 ——
+       * 面板上永远显示「只读」，而插件侧完全看不出异常：
+       * 它确实把 submit 传过来了，是被内核的规范化吞掉的。
+       */
+      const out = { type, title, fields: clean }
+      if (isPlainObject(block.submit) && typeof block.submit.id === 'string' && block.submit.id.trim()) {
+        out.submit = {
+          id: block.submit.id.trim(),
+          label: String(block.submit.label ?? '保存').trim() || '保存',
+        }
+      }
+      return out
     }
 
     if (type === 'table') {
