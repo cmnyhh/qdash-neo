@@ -36,12 +36,29 @@
 
 ### 2. 安装
 
+**推荐在 DSH 控制台里装**：打开控制台 → **插件** → **安装**，输入包名 `@cmnyhh/qdash-neo`，确认后重启宿主。
+
+命令行等价：
+
 ```bash
-npm i @cmnyhh/qdash-neo
-npx dsh --profile web --patch node_modules/@cmnyhh/qdash-neo/cordis.patch.yml
+dsh plugin --profile web add @cmnyhh/qdash-neo
 ```
 
-> `--patch` 必须位于 `--port`、`--no-open` 等启动参数**之前**，否则会被解析为子命令选项并报错。
+两种方式做的事一样：装进 profile 的 `node_modules`，并登记到它的 `dsh.profile.bundles`。插件自带 `dsh.bundle.patch`，DSH 会自己应用它的 `cordis.patch.yml`，不需要再改任何配置文件。
+
+> **不要用 `--patch` 启动参数加载它。**
+>
+> `npx dsh --profile web --patch node_modules/.../cordis.patch.yml` 这种写法能用，但每次启动都会**重新注入**一次。后果是控制台的插件管理里卸载不掉——点卸载会报「其他配置仍在使用这个组合包的组件」，而那个"其他配置"就是启动参数本身，只能去改 systemd 的 `ExecStart`。
+>
+> 走插件安装（控制台或 `dsh plugin add`）才是正常途径：插件归 profile 管，能直接停用和卸载。
+
+**卸载**：控制台里点卸载，或者
+
+```bash
+dsh plugin --profile web remove @cmnyhh/qdash-neo
+```
+
+数据不会跟着删：`$DSH_HOME/storages/qdash-neo.db`（含 `-wal` / `-shm`）需要手动清理。
 
 ### 3. 配置
 
