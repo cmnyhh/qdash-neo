@@ -131,8 +131,19 @@ export async function createConfig() {
       sleep: Schema.object({
         enabled: Schema.boolean().default(true).description('允许模型自行决定闭麦休息一段时间'),
         // 用秒而不是分钟：等待类参数在配置里混单位最容易出错（乘 60 漏了或乘两次）
-        minSeconds: Schema.natural().default(1).description('沉睡时长下限（秒），也是提示词里给模型的范围下界'),
-        maxSeconds: Schema.natural().default(60).description('沉睡时长上限（秒），超出会被夹到这个值'),
+        minSeconds: Schema.natural().default(30).description('沉睡时长下限（秒），也是提示词里给模型的范围下界'),
+        /**
+         * **原来是 60 秒，太短了 —— 等于没睡。**
+         *
+         * 模型输出 `[[SLEEP:60]]` 后被夹到 60 秒，一分钟后又可以被唤起；
+         * 而定时任务（比如 B 站那个）正好会在这时叫它，它醒来发现没有新消息，
+         * 又说一次 `[[SLEEP:60]]` —— 后台日志里连续几条都是"睡"，
+         * 看起来像在空转，实际上它每次都被叫醒了一次。
+         *
+         * 600 秒（10 分钟）是"在场但不吭声"的自然尺度：比一次对话间隔长，
+         * 又不会长到错过群里真正的话题。
+         */
+        maxSeconds: Schema.natural().default(600).description('沉睡时长上限（秒），超出会被夹到这个值'),
       }).description('随机沉睡：模型自己决定休息多久（秒），期间完全不响应'),
     }).description('准入策略'),
 
@@ -262,7 +273,20 @@ export async function createConfig() {
      * 把它塞进来等于要求用户先配一个 TTS 才能用语音。
      */
     voice: Schema.object({
-      enabled: Schema.boolean().default(false).description('允许模型发语音（默认关，需先往语音库放文件）'),
+      /**
+       * **默认开。**
+       *
+       * 原来是 `default(false)`，但实践下来是纯粹的坑：装了 voice 插件、配了
+       * TTS、往库里放了音频，结果配置页显示「未开启」、`qq_send_voice` 不注册、
+       * `qq_speak` 一调就抛「语音功能未开启」。
+       *
+       * 而 `voice.enabled` 是嵌套字段，用户很难在配置页找到它
+       * （之前连中文名都没有），于是这个功能**装了等于没装**。
+       *
+       * 库为空时不会有副作用：`qq_send_voice` 只是没文件可选，
+       * 模型会退回去打字。
+       */
+      enabled: Schema.boolean().default(true).description('允许模型发语音（库里没有文件时自然发不出去）'),
       dir: Schema.string()
         .default('')
         .description('语音库目录；留空用 <DSH_HOME>/qdash-voice（不存在时自动创建）'),

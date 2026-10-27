@@ -1463,24 +1463,15 @@ function renderSettings(data) {
         })
     : panel({ title: '没有可配置项', body: empty({ title: '配置 schema 为空' }) })
 
-  const audit = (data.audit ?? []).length
-    ? panel({
-        title: '最近变更',
-        sub: '谁在什么时候改了什么',
-        flush: true,
-        body: table({
-          columns: [{ label: '时间' }, { label: '字段' }, { label: '原值' }, { label: '新值' }, { label: '来源' }],
-          rows: (data.audit ?? []).map(r => [
-            stamp(r.at),
-            el('span', { class: 'mono', text: r.path }),
-            el('span', { class: 'mono muted clip', text: clip(r.from ?? '—', 40) }),
-            el('span', { class: 'mono clip', text: clip(r.to ?? '—', 40) }),
-            el('span', { class: 'muted', text: r.actor || '—' }),
-          ]),
-          empty: empty({ title: '还没有通过控制台改过配置' }),
-        }),
-      })
-    : null
+  /**
+   * 「最近变更」那块审计表拿掉了。
+   *
+   * 它放在配置页最底下、占掉一屏，而实际用处很小 ——
+   * 想知道"谁改了什么"的时候，看当前值就够了；
+   * 而它每次都把主表单往下推，用户要滚很久才能看到最后一个分组。
+   *
+   * 数据还在（`data.audit`），只是不渲染了。
+   */
 
   const llmNote =
     cfg.llm && cfg.llm.reason
@@ -1503,7 +1494,7 @@ function renderSettings(data) {
       el('nav', { class: 'cfg-nav', attrs: { 'aria-label': '配置分组', role: 'tablist' } }, navItems),
       el('div', { class: 'cfg-pane', attrs: { role: 'tabpanel' } }, [pane]),
     ]),
-    audit,
+    // audit 已不再渲染（见上面那段说明）
     saveBar(onSave, onReset),
   ])
 }

@@ -91,6 +91,38 @@ const GROUP_LAYOUT = [
     ],
   },
   {
+    /**
+     * **`voice.*` 和 `proactive.*` 必须在这里出现。**
+     *
+     * `GROUP_LAYOUT` 是配置页左栏的分组清单；不在任何 `paths` 里的字段会被
+     * 兜到最底下的「其它」组 —— 那个组用户基本不会翻，于是「语音开关」和
+     * 「主动发言」实际上等于**不可达**。
+     *
+     * 这正是"模型不发语音"和"立刻试一次没反应"的共同根因：
+     * 两个总开关都在「其它」里躺着，默认还是 false。
+     */
+    key: 'voice',
+    label: '语音库',
+    paths: [
+      'voice.enabled',
+      'voice.dir',
+      'voice.maxSeconds',
+      'voice.maxBytes',
+      'voice.maxPerMinute',
+      'voice.maxPerHour',
+      'voice.allowAbsolutePath',
+    ],
+  },
+  {
+    key: 'proactive',
+    label: '主动发言',
+    paths: [
+      'proactive.enabled',
+      'proactive.maxPerDay',
+      'proactive.quietHours',
+    ],
+  },
+  {
     key: 'access',
     label: '谁能触发',
     paths: [

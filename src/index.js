@@ -172,7 +172,14 @@ export function apply(ctx, config) {
   const configStore = new ConfigStore({ schema: Config, base: config ?? {}, store: null, log })
   service.configStore = configStore
 
-  ctx.provide('qdashNeo', service)
+  /**
+   * **只 provide 白名单门面，不是整个 service。**
+   *
+   * 早先直接把实例交出去，插件能碰 `deliver` / `client` / `sleepUntil`
+   * —— `capabilities` 那张表因此只是说明书，不是约束。
+   * 门面是 `service.api`（白名单代理），键在 `PLUGIN_API_KEYS`。
+   */
+  ctx.provide('qdashNeo', service.api)
 
   // 显式释放 socket / sqlite / 监听器：多个 disposer 并发执行，所以合在一个 effect 里
   if (typeof ctx.effect === 'function') {

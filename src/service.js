@@ -42,6 +42,37 @@ import { PluginToolRegistry } from './plugin/tools.js'
 import { VoiceLibrary } from './voice/library.js'
 
 /**
+ * **插件能访问的 `ctx.qdashNeo` 属性白名单。**
+ *
+ * 这里没有的东西，插件拿到的就是 `undefined` —— 包括 `deliver` / `client` /
+ * `sleepUntil` / `outbox` 这些内部结构。早先整个 service 直接 provide 出去，
+ * `capabilities` 那张表只是"说明书"，想绕过出站队列用 `neo.client` 就行。
+ *
+ * **加新能力要同时改三处**：这里、`this.capabilities`、插件文档 §0.1。
+ * 三处不一致就是"文档说有、实际用不了"或反过来。
+ */
+const PLUGIN_API_KEYS = new Set([
+  // 能力清单与只读快照
+  'capabilities',
+  'config',
+  // 门面
+  'tools',
+  'outboxApi',
+  'card',
+  'instructions',
+  'console',
+  'settings',
+  'storage',
+  'voice',
+  'judge',
+  // 方法
+  'log',
+  'on',
+  'onConfigChange',
+  'openProactive',
+])
+
+/**
  * 工具策略的取舍（`tools/index.js` 里实现，这里只留结论）：
  *
  * 早期只挂了 `tools.guard()` 做**负面清单**，因为它不会因未知工具名抛错。
@@ -135,11 +166,24 @@ export class QdashNeoService {
      * 否则模型连着排三次，到点会连着被唤起三次。
      */
     this.laterTimers = new Map()
+    /**
+     * 正在进行的「主动唤起」轮次：chatKey 集合。
+     *
+     * 唯一用途是让 `onSleep` 分清两种"睡"：
+     * 主动唤起时说睡 = 这轮没东西可发，**不能**把群静音。
+     */
+    this.proactiveTurn = new Set()
     /** 主动评估计数：chatKey → { day, n }，用于每日上限（内存级即可） */
     this.proactiveUsed = new Map()
     /** 沉睡时长范围（**秒**），由配置决定，用于夹住模型给的数值 */
-    this.sleepMin = 600
-    this.sleepMax = 3600
+    /**
+     * 沉睡范围（秒）。**和 `config.js` 里 `sleep.minSeconds/maxSeconds` 的默认值一致**。
+     *
+     * 这里只是 `applyConfig` 跑之前的兜底值；不一致的话，
+     * 启动瞬间模型看到的范围和配置页显示的会对不上。
+     */
+    this.sleepMin = 30
+    this.sleepMax = 600
     this.sleepEnabled = false
     /** 过闸门后真正回复的概率（0~1） */
     this.replyChance = 1
@@ -395,8 +439,42 @@ export class QdashNeoService {
      * 门面只暴露 `on()`，不暴露 `emit()` —— 发事件是内核的事。
      * 插件之间想互相通信应该走自己的存储，而不是借这里当消息总线。
      */
+    /** 订阅配置变更的插件回调（见 onConfigChange） */
+    this.configListeners = new Set()
+
     this.pluginEvents = new PluginEvents({ log: this.log })
     this.on = (event, handler) => this.pluginEvents.on(event, handler)
+
+    /**
+     * **配置落盘后的通知**（插件用）。
+     *
+     * 解决一个反复踩的坑：选项卡是「注册那一刻的快照」，而配置随时会被改 ——
+     * 于是插件页显示的状态和实际开关**不一致**：用户把语音关了，页面还写着
+     * 「已开启」，因为他不知道要点一下「刷新列表」。
+     *
+     * 原来没有任何办法让插件知道配置变了（`pluginEvents` 是内核事件总线，
+     * 只旁听，不转发配置）。
+     *
+     * **注册即回调一次**：插件不必自己处理"挂载时配置已经就绪"这种情况，
+     * 否则每个插件都要写一遍初始化 + 订阅两套逻辑。
+     *
+     * @param {(config: object) => void} fn
+     * @returns {() => void} 退订
+     */
+    this.onConfigChange = fn => {
+      if (typeof fn !== 'function') return () => {}
+      const wrapped = config => {
+        try {
+          fn(config)
+        } catch (err) {
+          this.log('warn', `qdash-neo: 配置变更回调抛错 msg=${err?.message}`)
+        }
+      }
+      this.configListeners.add(wrapped)
+      // 挂载即同步一次当前值
+      wrapped(this.config)
+      return () => this.configListeners.delete(wrapped)
+    }
 
     /**
      * 能力清单（只读）。
@@ -407,6 +485,34 @@ export class QdashNeoService {
      *
      * 新增能力时同步这里和文档 §0.1，否则插件作者只能靠试。
      */
+    /**
+     * **给插件的门面：只放行文档里承诺过的东西。**
+     *
+     * 早先是 `ctx.provide('qdashNeo', service)` —— 整个 service 实例交给插件，
+     * 于是 `neo.deliver()` / `neo.client` / `neo.sleepUntil` / `neo.outbox`
+     * 这些**内部结构**全都在外面裸着。`capabilities` 那张表因此只是"说明"，
+     * 不是"约束"：插件想绕过出站队列，直接用 `neo.client` 就行。
+     *
+     * 现在用白名单代理：
+     *
+     *   - 认得的属性 → 正常返回（方法绑定到实例，避免 `this` 丢失）
+     *   - 不认得的     → `undefined`（不是抛错：插件常用 `neo?.xxx` 做能力探测，
+     *                     抛错会把探测变成崩溃）
+     *
+     * 加新能力时**必须同时**改这里和 `capabilities` —— 两处不一致就是
+     * 又一个"注册了但用不了"的坑。
+     */
+    this.api = new Proxy(this, {
+      get: (target, prop, receiver) => {
+        if (typeof prop === 'symbol') return Reflect.get(target, prop, receiver)
+        if (!PLUGIN_API_KEYS.has(prop)) return undefined
+        // receiver 传 target：getter 里的 `this` 保持指向实例本身
+        const v = Reflect.get(target, prop, target)
+        return typeof v === 'function' ? v.bind(target) : v
+      },
+      has: (target, prop) => typeof prop === 'string' && PLUGIN_API_KEYS.has(prop),
+    })
+
     this.capabilities = Object.freeze({
       'console-tab': true,
       'console-static': false,
@@ -432,6 +538,13 @@ export class QdashNeoService {
        * 这段文字进的是系统提示，能改写模型对其他事的判断，所以授权独立于工具。
        */
       instructions: true,
+      /**
+       * 插件能订阅配置变更（`onConfigChange`）。
+       *
+       * **注册即回调一次**：插件不必自己写「初始化 + 订阅」两套逻辑，
+       * 否则每个读配置来渲染状态的选项卡都要处理"挂载时配置是否就绪"。
+       */
+      'config-events': true,
       fetch: false,
     })
     /** @type {{ userId?: string, nickname?: string }|null} 登录信息，用来拼"机器人的称呼" */
@@ -510,9 +623,31 @@ export class QdashNeoService {
         this.stats.silent += 1
         this.log('info', `qdash-neo: ${chatKey} 模型选择不开口，本条不发`)
       },
-      // 模型自己要求休息（输出 `[[SLEEP:N]]`）：设置沉睡并静默本条
+      /**
+       * 模型自己要求休息（输出 `[[SLEEP:N]]`）：设置沉睡并静默本条。
+       *
+       * ## 但**主动唤起时说"睡"不能静音整个群**
+       *
+       * 两种场景下 `[[SLEEP:N]]` 的语义完全不同：
+       *
+       *   - **群友在聊**，它说"睡" → 我这次不接话，接下来几分钟也别叫我（会话级）
+       *   - **定时任务叫它**（B 站分享），它说"睡" → 这轮没东西可发；
+       *     但群里正经有人说话时，它**必须还能回**
+       *
+       * 早先两种情况共用同一个 `sleepUntil`，结果：定时唤起一次、模型说睡，
+       * 整个群 10 分钟内谁说话它都不理 —— 一个"后台任务"把前台聊天堵死了。
+       *
+       * 主动唤起这一轮只记"这次不发"，不落睡眠状态。
+       */
       onSleep: (chatKey, minutes) => {
         this.stats.silent += 1
+        if (this.proactiveTurn.has(chatKey)) {
+          this.log(
+            'info',
+            `qdash-neo: ${chatKey} 主动唤起时选择不发（不进入沉睡，正常聊天不受影响）`,
+          )
+          return
+        }
         this.setSleep(chatKey, minutes)
       },
       // 模型给自己排个期（`[[LATER:N|备忘]]`）：到点再唤起一次，说不说由它重新判断
@@ -1514,9 +1649,19 @@ export class QdashNeoService {
    *     必须明确"没人叫你，说不出也正常"，否则它会当成任务去完成。
    */
   async openProactive(chatKey, { hint = '' } = {}) {
+    /**
+     * **闸门被拦时要返回原因，不能静默 return。**
+     *
+     * 早先这里是 `log('info', …) + return`，而 info 级在 DSH 里看不到 ——
+     * 于是调用方（定时插件）以为"唤起成功了"，用户看到的却是"点了没反应"，
+     * 日志里一个字都没有。这个坑排查了很久。
+     *
+     * @returns {{ ok: boolean, skipped?: string, reason?: string }}
+     */
     if (this.config?.proactive?.enabled !== true) {
-      this.log('info', `qdash-neo: ${chatKey} 排期到期，但主动发言未开启，跳过`)
-      return
+      const reason = '主动发言未开启：控制台「配置 → 策略」里打开 proactive.enabled'
+      this.log('warn', `qdash-neo: ${chatKey} 排期到期，但${reason}`)
+      return { ok: false, skipped: 'disabled', reason }
     }
 
     /**
@@ -1530,14 +1675,16 @@ export class QdashNeoService {
     const used = this.proactiveUsed.get(chatKey)
     const count = used && used.day === today ? used.n : 0
     if (Number.isFinite(cap) && cap > 0 && count >= cap) {
-      this.log('info', `qdash-neo: ${chatKey} 今日主动评估已达上限 ${cap}，跳过`)
-      return
+      const reason = `今日主动评估已达上限 ${cap}`
+      this.log('warn', `qdash-neo: ${chatKey} ${reason}，跳过`)
+      return { ok: false, skipped: 'quota', reason }
     }
 
     const quiet = this.config?.proactive?.quietHours
     if (Array.isArray(quiet) && quiet.length === 2 && this.inQuietHours(quiet)) {
-      this.log('info', `qdash-neo: ${chatKey} 处于安静时段 ${quiet[0]}-${quiet[1]}，跳过本次主动评估`)
-      return
+      const reason = `处于安静时段 ${quiet[0]}-${quiet[1]}`
+      this.log('warn', `qdash-neo: ${chatKey} ${reason}，跳过本次主动评估`)
+      return { ok: false, skipped: 'quiet', reason }
     }
 
     // 过了所有闸才记账：被安静时段挡下的不算消耗额度
@@ -1545,6 +1692,25 @@ export class QdashNeoService {
       day: today,
       n: count + 1,
     })
+
+    /**
+     * **沉睡中不唤起。**
+     *
+     * `deliver()` 走的是主动通道，**绕过 gates 的睡眠过滤** ——
+     * 而定时插件不知道这个会话正在睡，仍然会到点叫它。
+     * 于是模型醒来看到"没有新消息"，只能再说一次 `[[SLEEP:N]]`：
+     * 日志里连续几条都是"睡"，像在空转。
+     *
+     * 沉睡是模型自己表达过的意图（"我现在不想说话"），
+     * 主动通道应该尊重它 —— 睡醒之后下一轮再来。
+     */
+    if (this.isSleeping(chatKey)) {
+      const until = this.sleepUntil.get(chatKey) ?? 0
+      const at = until ? new Date(until).toLocaleTimeString('zh-CN', { hour12: false }) : '?'
+      const reason = `正在沉睡（到 ${at}）`
+      this.log('info', `qdash-neo: ${chatKey} ${reason}，跳过本次主动唤起`)
+      return { ok: false, skipped: 'sleeping', reason }
+    }
 
     const isGroup = chatKey.startsWith('g:')
     const ev = {
@@ -1561,7 +1727,22 @@ export class QdashNeoService {
       segments: [],
       proactive: { hint },
     }
-    await this.deliver(ev)
+    /**
+     * 标记「这一轮是主动唤起」。
+     *
+     * `onSleep` 拿不到 `ev`，只能靠这个标记区分两种"睡"：
+     * 主动唤起时说睡 = 这轮没东西可发；**不是**要把整个群静音。
+     *
+     * 用 `finally` 清 —— `deliver` 抛错也不能把标记漏在那儿，
+     * 否则下一轮正常聊天里的 `[[SLEEP:N]]` 会被误判成主动唤起、睡不成了。
+     */
+    this.proactiveTurn.add(chatKey)
+    try {
+      await this.deliver(ev)
+    } finally {
+      this.proactiveTurn.delete(chatKey)
+    }
+    return { ok: true }
   }
 
   /**
@@ -2406,6 +2587,32 @@ export class QdashNeoService {
      * 所以配置变了直接重建 —— 比写一个 applyConfig 更不容易漏字段。
      */
     this.voice = this.makeVoice(next)
+
+    /**
+     * 诊断：确认配置里到底有没有 voice / proactive。
+     *
+     * 排查"库里是 true、运行时是 false"时，只有这一行能说明是**配置没传进来**
+     * 还是**传进来了但没被应用**。用 console.log 而不是 this.log（info 看不见）。
+     */
+    console.log(
+      `qdash-neo: applyConfig voice=${JSON.stringify(next?.voice)} ` +
+        `proactive=${JSON.stringify(next?.proactive)} ` +
+        `voiceEnabled=${this.voice?.enabled}`,
+    )
+
+    /**
+     * 通知订阅了配置的插件。
+     *
+     * 放在最后：前面该重建的都重建完了（`voice` 尤其重要），
+     * 插件回调里再读状态才是新的。
+     */
+    for (const fn of this.configListeners) {
+      try {
+        fn(next)
+      } catch (err) {
+        this.log('warn', `qdash-neo: 配置变更通知失败 msg=${err?.message}`)
+      }
+    }
 
     /**
      * 会话的模型绑定 / cwd。

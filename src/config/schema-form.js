@@ -75,6 +75,20 @@ export function optionsFromOf(path) {
  */
 export const FIELD_LABELS = {
   'policy.whitelist': '私聊白名单',
+  /**
+   * `voice.*` 和 `proactive.*` 原来没有中文名，配置页显示成
+   * `voice.enabled`、`proactive.enabled` 这样的英文 key ——
+   * 用户根本认不出这是"语音开关"和"主动发言"，也就改不了。
+   */
+  'voice.enabled': '语音功能（总开关）',
+  'voice.dir': '语音库目录',
+  'voice.maxBytes': '单个音频上限（字节）',
+  'voice.maxSeconds': '语音时长上限（秒）',
+  'voice.maxPerMinute': '每分钟最多几条',
+  'voice.maxPerHour': '每小时最多几条',
+  'proactive.enabled': '主动发言（定时唤起）',
+  'proactive.maxPerDay': '每天最多主动发言几次',
+  'proactive.quietHours': '安静时段（这段时间不唤起）',
   'policy.groupEnabled': '响应群消息',
   'policy.groupWhitelist': '群白名单',
   'policy.groupTrigger': '触发策略',
