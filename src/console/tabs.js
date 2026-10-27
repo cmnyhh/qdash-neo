@@ -311,9 +311,28 @@ export class TabRegistry {
        */
       const out = { type, title, fields: clean }
       if (isPlainObject(block.submit) && typeof block.submit.id === 'string' && block.submit.id.trim()) {
+        const submitId = block.submit.id.trim()
         out.submit = {
-          id: block.submit.id.trim(),
+          id: submitId,
           label: String(block.submit.label ?? '保存').trim() || '保存',
+        }
+        /**
+         * **`submit.run` 必须注册进 actions 表。**
+         *
+         * 早先这里只透传了 `id` 和 `label`，`run` 被丢掉 ——
+         * 于是点「保存」时查 `tab.actions.get('save')` 是 undefined，
+         * 报：
+         *
+         *     选项卡「bili」没有动作：save
+         *
+         * 而插件侧完全看不出异常：它确实把 `run` 传过来了。
+         * 所有用 `form.submit` 的插件都受影响（voice 那个也一样点不动）。
+         */
+        if (typeof block.submit.run === 'function') {
+          if (actions.has(submitId)) fail(`${where}的动作 id 重复：${submitId}`)
+          actions.set(submitId, block.submit.run)
+        } else if (block.submit.run != null) {
+          fail(`${where} 的 submit.run 必须是函数`)
         }
       }
       return out
