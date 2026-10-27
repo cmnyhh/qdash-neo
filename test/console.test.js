@@ -1010,3 +1010,28 @@ test('首次设置：跨站 Origin 被拒，同源放行', async () => {
     h.dispose?.()
   }
 })
+
+test('登录限流：反代场景按 X-Forwarded-For 区分来源，不互相连坐', async () => {
+  const h = await harness()
+  try {
+    const bad = xff =>
+      h.request('/qdash-neo/login', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-forwarded-for': xff },
+        body: { username: 'admin', password: 'wrong' },
+      })
+
+    for (let i = 0; i < 12; i++) await bad('1.1.1.1')
+    const locked = await bad('1.1.1.1')
+    assert.equal(locked.status, 429, '同一个来源连续失败要被限流')
+
+    const other = await bad('2.2.2.2')
+    assert.equal(
+      other.status,
+      401,
+      '换一个来源不该被连坐 —— 反代后所有请求的 remoteAddress 都是 127.0.0.1',
+    )
+  } finally {
+    h.dispose?.()
+  }
+})

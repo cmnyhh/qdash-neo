@@ -502,7 +502,7 @@ export class ConsoleServer {
 
     if (isConfigWrite) {
       const body = await this.#readJson(req)
-      const actor = String(body?.actor ?? '').trim() || String(req.socket?.remoteAddress ?? '')
+      const actor = String(body?.actor ?? '').trim() || this.#clientIp(req)
       const payload = api.configUpdate({ service: this.service, server: this, body: { ...body, actor } })
       this.#json(res, 200, payload)
       return
@@ -685,7 +685,7 @@ export class ConsoleServer {
       return
     }
 
-    const ip = String(req.socket?.remoteAddress ?? 'unknown')
+    const ip = this.#clientIp(req)
     if (this.throttle.blocked(ip)) {
       this.log('warn', `qdash-neo: 登录失败次数过多，暂时拒绝 ${ip}`)
       this.#json(res, 429, { ok: false, error: { code: 'too-many-attempts', message: '尝试次数过多，请一分钟后再试' } })
@@ -888,6 +888,29 @@ export class ConsoleServer {
   #isSecure(req) {
     if (req.socket && /** @type {any} */ (req.socket).encrypted) return true
     return String(req.headers?.['x-forwarded-proto'] ?? '').toLowerCase() === 'https'
+  }
+
+  /**
+   * 客户端 IP，用于登录限流与审计。
+   *
+   * 反代之后 `remoteAddress` 恒为 `127.0.0.1` —— 直接拿它当限流键，
+   * **一个人输错几次就把所有人都锁了**（所有人都被算成同一个来源）。
+   *
+   * 所以只在来源是回环时才采信 `X-Forwarded-For`：那时请求必然来自同机的
+   * 反代进程，而不是外部。直连场景下这个头可以被任意伪造，不能信。
+   *
+   * @param {import('node:http').IncomingMessage} req
+   * @returns {string}
+   */
+  #clientIp(req) {
+    const remote = String(req.socket?.remoteAddress ?? '').trim()
+    const isLoopback =
+      remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1'
+    if (isLoopback) {
+      const xff = String(req.headers?.['x-forwarded-for'] ?? '').split(',')[0].trim()
+      if (xff) return xff
+    }
+    return remote || 'unknown'
   }
 
   async #dispatchApi(name, url) {
