@@ -309,3 +309,27 @@ test('工具输出：schema 必须接受数组（群成员列表就是数组，�
   assert.ok(types.includes('object'))
   assert.ok(types.includes('null'), 'kick 这类可能返回 null')
 })
+
+test('reply_to 不在本轮批里 → 降级为普通消息，内容不丢', async () => {
+  const queued = []
+  const created = createQqTools({
+    chatKey: 'g:1',
+    client: { call: async () => ({}) },
+    enqueue: (k, text, meta) => queued.push({ k, text, meta }),
+    config: { tools: {} },
+    canReply: id => id === '100',
+  })
+  const send = created.defs.find(d => d.name === 'qq_send_message')
+
+  await send.execute({ text: '回你', reply_to: '100' }, {})
+  assert.equal(queued[0].meta.replyTo, '100', '合法的要带上引用')
+
+  /**
+   * 抄错一位是模型常犯的小错。拒绝等于丢掉整条消息，用户只看到"它没说话"；
+   * 而不校验的话，OneBot 返回"找不到消息"→ 进死信重试三次 → 同样是什么都没有。
+   * 所以降级：不认识就当作没传，消息照发。
+   */
+  await send.execute({ text: '回错', reply_to: '999' }, {})
+  assert.equal(queued[1].meta.replyTo, undefined, '不合法的引用要去掉')
+  assert.equal(queued[1].text, '回错', '但内容必须照发')
+})

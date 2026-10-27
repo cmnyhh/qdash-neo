@@ -173,6 +173,15 @@ export function createQqTools({
   senderId = null,
   /** 语音库（`VoiceLibrary` 实例）；为 null 时语音工具不注册 */
   voice = null,
+  /**
+   * `qq_send_message({ reply_to })` 的校验函数：这个 ID 是不是真在本轮的批里。
+   *
+   * 为 null 时不校验（老内核 / 测试环境）。内核传入的是
+   * `id => turnBatches.get(chatKey)?.has(id) ?? false`。
+   *
+   * @type {((id: string) => boolean)|null}
+   */
+  canReply = null,
   config = {},
   log = () => {},
 }) {
@@ -421,7 +430,22 @@ export function createQqTools({
      * 每条一个独立 id 的话，界面上就是三句互不相干的话。
      */
     const replyId = `out:${Date.now()}:${sent.count + 1}`
-    const rid = String(replyTo ?? '').trim()
+    /**
+     * 校验 `reply_to` 是不是真在本轮的批里。
+     *
+     * **降级而不是拒绝**：抄错一位是模型常犯的小错，为它丢掉整条消息不值。
+     * 不认识就当作没传，发一条普通消息 —— 用户至少能看到内容。
+     *
+     * 不校验的后果：OneBot 返回"找不到消息"，进死信重试三次再丢，
+     * 用户只看到"它没说话"，而根因是一条引用到不存在消息上的发送。
+     */
+    const asked = String(replyTo ?? '').trim()
+    const allowed = !asked || typeof canReply !== 'function' || canReply(asked)
+    const rid = allowed ? asked : ''
+    if (asked && !allowed) {
+      log('warn', `qdash-neo: reply_to=${asked} 不在本轮批里，已降级为普通消息`)
+    }
+
     plan.parts.forEach((part, i) => {
       const qqMsgId = plan.parts.length === 1 ? replyId : `${replyId}:${i + 1}`
       enqueue(chatKey, part, {

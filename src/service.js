@@ -144,6 +144,19 @@ export class QdashNeoService {
     this.replyChance = 1
     /** 各会话的工具挂载结果（chatKey → applyToolPolicy 的返回值），出站侧查"本回合发过没" */
     this.toolStates = new Map()
+
+    /**
+     * 本轮批里的消息 ID（`chatKey` → `Set<id>`）。
+     *
+     * `qq_send_message` 的 `reply_to` 要校验它是不是"真的在这一批里"：
+     * 模型抄错一位，OneBot 会返回"找不到消息"，然后进死信重试三次再丢 ——
+     * 用户看到的是"它没说话"，而根因是一条引用到不存在消息上的发送。
+     *
+     * 每轮开始时由 `deliver` 设置，`turn/end` 清掉。
+     *
+     * @type {Map<string, Set<string>>}
+     */
+    this.turnBatches = new Map()
     // 立刻按配置初始化：applyConfig 只在控制台保存后触发，不能等它
     this.applyRandomPolicy(config)
     const jc = config?.judge ?? {}
@@ -848,6 +861,13 @@ export class QdashNeoService {
           memory: this.memoryOf() ?? null,
           // `qq_get_image(file:"latest")` 用它兜底：模型常常不知道具体是哪张图
           lastImageFile: () => this.lastImage.get(chatKey) ?? '',
+          /**
+           * `qq_send_message({ reply_to })` 的校验：这个 ID 是不是真在本轮的批里。
+           *
+           * **降级而不是拒绝**：抄错一位是模型常犯的小错，为它丢掉整条消息不值。
+           * 不认识就当作没传，发一条普通消息 —— 用户至少能看到内容。
+           */
+          canReply: id => this.turnBatches.get(chatKey)?.has(String(id)) ?? false,
           // 管理类工具的身份校验：只有这些 QQ 号能授权踢人
           ownerIds: this.adminOwners(),
           senderId: () => this.lastSender.get(chatKey) ?? '',
@@ -960,6 +980,8 @@ export class QdashNeoService {
     } finally {
       // 一轮结束才清零：`sentCount` 是只读的，靠这里复位，否则下一轮会误判成"已经发过"
       this.toolStates.get(ev.chatKey)?.resetSent?.()
+      // 批 ID 只在本轮有效：下一轮是新的一批，旧的引用目标已经不该再被接受
+      this.turnBatches.delete(ev.chatKey)
       this.pluginEvents.emit('turn/end', {
         kind,
         chatKey: ev.chatKey,
@@ -1767,6 +1789,21 @@ export class QdashNeoService {
   async deliver(ev, judgement = null, { batch = null, ctx = null } = {}) {
     const chatKey = ev.chatKey
     const isGroup = ev.kind === 'group'
+
+    /**
+     * 记下这一批的消息 ID：`qq_send_message({ reply_to })` 只接受这些值。
+     *
+     * 用**真实的 messageId**（不是批内序号），所以这里存的就是模型在 prompt 里
+     * 看到的那些 `[#数字]`，不需要再做一层映射。
+     */
+    if (isGroup) {
+      const ids = new Set(
+        (Array.isArray(batch) && batch.length ? batch : [ev])
+          .map(it => String(it?.messageId ?? '').trim())
+          .filter(Boolean),
+      )
+      if (ids.size) this.turnBatches.set(chatKey, ids)
+    }
 
     // 记下"这次是谁在说话"：`qq_kick` 这类管理工具要靠它做身份校验。
     // 主动发言没有发送者，**不能覆盖** —— 否则它自己开口一次，之前验证过的身份就丢了。
