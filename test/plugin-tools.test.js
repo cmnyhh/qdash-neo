@@ -254,3 +254,19 @@ test('插件工具：能按 owner 摘除（收回后对已有会话生效）', (
   assert.equal(state.detachPluginOwner('pa'), 0, '重复摘除返回 0，不抛错')
   assert.equal(state.detachPluginOwner('不存在的插件'), 0, '未知 owner 返回 0')
 })
+
+test('插件工具：同来源重注册要替换（否则卸载残留会让插件装不回来）', () => {
+  const reg = mkReg()
+  reg.register({ name: 'qq_speak', description: '旧', owner: 'p', execute: async () => ({}) })
+  reg.register({ name: 'qq_speak', description: '新', owner: 'p', execute: async () => ({}) })
+
+  assert.equal(reg.list().length, 1, '同来源要替换')
+  assert.equal(reg.list()[0].description, '新')
+
+  assert.throws(
+    () =>
+      reg.register({ name: 'qq_speak', description: 'x', owner: 'other', execute: async () => ({}) }),
+    /已被/,
+    '不同来源同名仍然要报错',
+  )
+})

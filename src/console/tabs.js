@@ -78,9 +78,32 @@ export class TabRegistry {
 
     const existing = this.tabs.get(id)
     if (existing) {
-      throw new TabError('tab-conflict', `选项卡 id「${id}」已被占用（${existing.owner || '未知来源'}）`, {
-        conflictWith: existing.owner || '',
-      })
+      /**
+       * **同来源重注册 = 替换，不报冲突。**
+       *
+       * 场景：插件卸载时注册没清干净（没挂 `ctx.effect`，或被强制移除），
+       * 旧选项卡还占着这个 id。重装同一个插件时若抛「已被占用」，
+       * 日志里写的是它自己的名字 —— 看得出有冲突，但看不出「是它自己」，
+       * 而唯一的解是重启宿主。
+       *
+       * 不同 owner 抢同一个 id 仍然报错：那是真的撞名，必须让人改；
+       * 静默覆盖会让两个插件互相踩着对方的页面，比报错难查得多。
+       *
+       * `owner` 为空时不做替换：两个都没署名，没法判断是不是同一个来源。
+       */
+      const prevOwner = String(existing.owner ?? '')
+      const nextOwner = String(desc.owner ?? '')
+      if (prevOwner && prevOwner === nextOwner) {
+        this.log?.(
+          'warn',
+          `qdash-neo: 选项卡「${id}」被同一来源（${nextOwner}）重新注册，替换旧注册`,
+        )
+        this.tabs.delete(id)
+      } else {
+        throw new TabError('tab-conflict', `选项卡 id「${id}」已被占用（${existing.owner || '未知来源'}）`, {
+          conflictWith: existing.owner || '',
+        })
+      }
     }
     if (this.tabs.size >= this.limit) {
       throw new TabError('tab-invalid', `选项卡数量已达上限 ${this.limit}，拒绝注册「${id}」`)

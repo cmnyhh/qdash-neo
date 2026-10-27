@@ -55,9 +55,23 @@ export class PluginToolRegistry {
       throw new Error(`插件工具名「${name}」命中内核高危名单，拒绝注册`)
     }
 
+    /**
+     * 同来源重注册 = 替换，不报冲突。
+     *
+     * 和 `TabRegistry#register` 同一个理由：插件卸载时注册没清干净的话，
+     * 重装同名工具会撞上自己留下的那份，报「已被 xxx 注册」——
+     * 而 xxx 就是它自己，唯一的解是重启宿主。
+     *
+     * 不同 owner 同名仍然报错：那是真撞名。
+     */
     const exist = this.items.get(name)
     if (exist) {
-      throw new Error(`插件工具「${name}」已被 ${exist.owner} 注册`)
+      if (String(exist.owner) === owner) {
+        this.log?.('warn', `qdash-neo: 插件工具「${name}」被同一来源（${owner}）重新注册，替换旧注册`)
+        this.items.delete(name)
+      } else {
+        throw new Error(`插件工具「${name}」已被 ${exist.owner} 注册`)
+      }
     }
 
     const properties = {}

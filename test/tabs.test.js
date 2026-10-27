@@ -240,3 +240,21 @@ test('form 块：submit.id 为空或非法时当作只读，不报错', () => {
   assert.equal(layout[0].submit, undefined)
   assert.equal(layout[1].submit, undefined)
 })
+
+test('选项卡：同来源重注册要替换（否则卸载残留会让插件装不回来）', () => {
+  const { reg } = make()
+  reg.register(basic({ id: 'voice', owner: 'p', title: '旧' }))
+  // 模拟：插件卸载时注册没清干净，又重装了一次
+  reg.register(basic({ id: 'voice', owner: 'p', title: '新' }))
+
+  assert.equal(reg.size, 1, '同来源要替换，不是多一个')
+  assert.equal(reg.list()[0].title, '新')
+
+  // 不同来源抢同一个 id 仍然要报错：那是真撞名，静默覆盖更难查
+  assert.throws(() => reg.register(basic({ id: 'voice', owner: 'other' })), /已被占用/)
+
+  // owner 为空时不做替换：两个都没署名，判断不了是不是同一来源
+  const r2 = make().reg
+  r2.register(basic({ id: 'x', owner: '' }))
+  assert.throws(() => r2.register(basic({ id: 'x', owner: '' })), /已被占用/)
+})
