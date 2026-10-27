@@ -1061,32 +1061,32 @@ test('首次设置页：样式与脚本走独立文件（内联会被 CSP 挡掉
   }
 })
 
-test('插件工具开关：服务端自己取 revision，前端过期也不会 409', () => {
+test('插件工具授予：服务端自己取 revision，前端过期也不会 409', () => {
   const calls = []
   const cs = {
     revision: 7,
-    effective: () => ({ tools: { disabledPlugins: ['a'] } }),
+    effective: () => ({ tools: { grantedPlugins: ['a'] } }),
     update({ patch, revision }) {
       calls.push({ patch, revision })
-      return { changed: ['tools.disabledPlugins'], effective: {}, revision: 8 }
+      return { changed: ['tools.grantedPlugins'], effective: {}, revision: 8 }
     },
   }
   const service = { configStore: cs, applyConfig: () => {} }
 
-  const r = pluginToolToggle({ service, body: { owner: 'b', enabled: false } })
-  assert.deepEqual(calls[0].patch, { 'tools.disabledPlugins': ['a', 'b'] }, '关掉就加进去')
+  const r = pluginToolToggle({ service, body: { owner: 'b', granted: true } })
+  assert.deepEqual(calls[0].patch, { 'tools.grantedPlugins': ['a', 'b'] }, '授予就加进白名单')
   assert.equal(
     calls[0].revision,
     7,
     '用服务端当前 revision —— 前端带的是打开页面时的那个，早就过期了',
   )
-  assert.deepEqual(r.disabledPlugins, ['a', 'b'])
+  assert.deepEqual(r.grantedPlugins, ['a', 'b'])
 
-  // 再开回来
-  cs.effective = () => ({ tools: { disabledPlugins: ['a', 'b'] } })
-  const r2 = pluginToolToggle({ service, body: { owner: 'b', enabled: true } })
-  assert.deepEqual(r2.disabledPlugins, ['a'], '开回来就从列表里移除')
+  // 收回
+  cs.effective = () => ({ tools: { grantedPlugins: ['a', 'b'] } })
+  const r2 = pluginToolToggle({ service, body: { owner: 'b', granted: false } })
+  assert.deepEqual(r2.grantedPlugins, ['a'], '收回就从白名单里移除')
 
-  assert.throws(() => pluginToolToggle({ service, body: { owner: '', enabled: true } }), /缺少插件名/)
-  assert.throws(() => pluginToolToggle({ service, body: { owner: 'x' } }), /enabled/)
+  assert.throws(() => pluginToolToggle({ service, body: { owner: '', granted: true } }), /缺少插件名/)
+  assert.throws(() => pluginToolToggle({ service, body: { owner: 'x' } }), /granted/)
 })

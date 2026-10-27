@@ -172,17 +172,21 @@ export async function createConfig() {
         .default(true)
         .description('允许插件注册的工具挂到会话上（关掉则插件工具对模型不可见）'),
       /**
-       * 按插件关闭工具。
+       * 授予哪些插件的工具。
        *
-       * 和 `allowPluginTools` 的区别：那个是总闸（一个插件的工具出问题就得全关），
-       * 这个是逐个关 —— 某个插件的工具做危险操作，摘掉它一个就行，
-       * 别的插件不受影响。
+       * **默认是空数组 = 一个都不授予。**
+       *
+       * 这是安全默认：插件能自己注册工具，但**不能自己给自己授权**。
+       * 否则装上一个插件就等于把它的全部能力交给模型，管理员没有任何决策点。
+       *
+       * 注册之后工具会出现在控制台「工具」页（看得见），但模型拿不到，
+       * 直到有人在那里点「授予」。
        *
        * 填的是插件的 `owner`（注册工具时传的名字，默认「未署名插件」）。
        */
-      disabledPlugins: Schema.array(Schema.string())
+      grantedPlugins: Schema.array(Schema.string())
         .default([])
-        .description('按插件名禁用其全部工具（多个用逗号或换行分隔）；填 `undefined` 形式的名字不对，用注册时的 owner'),
+        .description('授予哪些插件的工具（默认空 = 一个都不授予）。在控制台「工具」页点授予，或在这里手填 owner'),
       adminOwners: Schema.array(Schema.string())
         .default([])
         .description(

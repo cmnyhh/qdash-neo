@@ -842,21 +842,25 @@ export class QdashNeoService {
    * @returns {number} 实际补挂了几处（一个工具×一个会话算一处）
    */
   /**
-   * 按 `tools.disabledPlugins` 把插件工具从**已有会话**上摘掉，再补挂该挂的。
+   * 按 `tools.grantedPlugins` 对齐**已有会话**上的插件工具：没授予的摘掉、授予的补挂。
    *
-   * 两件事都要做：只摘不挂的话，把插件重新启用之后要等新会话才回来；
-   * 只挂不摘的话，"禁用"只对新会话生效。
+   * 两件事都要做：只摘不挂的话，授予之后要等新会话才生效；
+   * 只挂不摘的话，收回只对新会话生效 —— 而界面上已经显示"未授予"了。
    *
    * @returns {{ detached: number, attached: number }}
    */
   syncPluginToolPolicy() {
-    const blocked = new Set((this.config?.tools?.disabledPlugins ?? []).map(String))
-    let detached = 0
+    const granted = new Set((this.config?.tools?.grantedPlugins ?? []).map(String))
 
-    if (blocked.size > 0) {
-      for (const state of this.toolStates.values()) {
-        if (typeof state?.detachPluginOwner !== 'function') continue
-        for (const owner of blocked) detached += state.detachPluginOwner(owner)
+    /**
+     * 摘掉**所有未被授予的**插件工具，而不是只摘某个黑名单。
+     * 因为默认是"一个都不授予"，新建的插件默认就该被摘掉。
+     */
+    let detached = 0
+    for (const state of this.toolStates.values()) {
+      if (typeof state?.detachPluginOwner !== 'function') continue
+      for (const owner of state.pluginOwners?.() ?? []) {
+        if (!granted.has(String(owner))) detached += state.detachPluginOwner(owner)
       }
     }
 
@@ -873,13 +877,14 @@ export class QdashNeoService {
     const defs = this.pluginTools?.defs?.() ?? []
     if (!defs.length || this.toolStates.size === 0) return 0
 
-    const blocked = new Set((this.config?.tools?.disabledPlugins ?? []).map(String))
+    /** 白名单：默认空 = 一个都不挂 */
+    const granted = new Set((this.config?.tools?.grantedPlugins ?? []).map(String))
     let attached = 0
 
     for (const state of this.toolStates.values()) {
       if (typeof state?.attachPluginTool !== 'function') continue
       for (const d of defs) {
-        if (blocked.has(String(d.owner ?? ''))) continue
+        if (!granted.has(String(d.owner ?? ''))) continue
         if (state.attachPluginTool(d)) attached += 1
       }
     }

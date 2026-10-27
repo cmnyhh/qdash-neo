@@ -101,7 +101,7 @@ export class PluginToolRegistry {
   /**
    * 归一化后的工具定义（给 `applyToolPolicy` 挂载用）。
    *
-   * 带上 `owner`：挂载时要按插件名过滤（`tools.disabledPlugins`），
+   * 带上 `owner`：挂载时要按插件名过滤（白名单）（`tools.grantedPlugins`），
    * 只给一份 `defs()` 而不带来源的话，那个过滤就没法做。
    * DSH 的 `tools.register` 会忽略不认识的字段，多这一个没影响。
    */

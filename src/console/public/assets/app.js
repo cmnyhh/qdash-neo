@@ -1679,7 +1679,8 @@ function renderToolsPane(group, rerender) {
    * 后者要等下一次建会话才更新，表现为"插件说注册了，目录里永远没有"。
    */
   if (data?.plugins?.length) {
-    const disabled = new Set((data.config?.disabledPlugins ?? []).map(String))
+    /** 已授予的插件。**默认空 = 一个都不授予** */
+    const granted = new Set((data.config?.grantedPlugins ?? []).map(String))
     /** @type {Map<string, object[]>} owner → 该插件的工具 */
     const byOwner = new Map()
     for (const t of data.plugins) {
@@ -1689,22 +1690,24 @@ function renderToolsPane(group, rerender) {
     }
 
     /**
-     * 切换某个插件的工具。
+     * 授予 / 收回某个插件的工具。
      *
      * 粒度是**整个插件**，不是单个工具 —— 内核不知道"摘掉这一个，
      * 那个插件还能不能正常工作"，那个判断只有插件自己知道。
      */
-    const toggleOwner = async (owner, nextOn) => {
+    const setGranted = async (owner, nextGranted) => {
       try {
         /**
          * 走专用接口，**不碰 revision**。
          *
          * 用 `/api/config` 的话要带上打开页面时的 revision，而用户在别处改过配置
-         * 之后它就已经过期了 —— 直接 409，表现为"点了禁用没反应"，
+         * 之后它就已经过期了 —— 直接 409，表现为"点了没反应"，
          * 而提示藏在 banner 里，很容易被当成按钮坏了。
          */
-        await apiWrite('/tools/plugin', { owner, enabled: nextOn })
-        showBanner(nextOn ? `已启用「${owner}」的工具` : `已禁用「${owner}」的工具`)
+        await apiWrite('/tools/plugin', { owner, granted: nextGranted })
+        showBanner(
+          nextGranted ? `已授予「${owner}」，模型现在能用了` : `已收回「${owner}」，模型不再能调用`,
+        )
         /**
          * 先丢缓存再拉，**不能只调 `rerender()`**：`ensureTools` 有缓存短路，
          * 那样只是拿旧数据重建 DOM，看起来像"点了没反应、刷新才生效"。
@@ -1723,13 +1726,13 @@ function renderToolsPane(group, rerender) {
           el('span', { class: 'persona-count', text: `${data.plugins.length} 个` }),
         ]),
         ...[...byOwner.entries()].map(([owner, items]) => {
-          const on = !disabled.has(owner)
+          const on = granted.has(owner)
           const btn = el('button', {
-            class: 'btn btn-ghost btn-sm',
+            class: 'btn btn-ghost',
             type: 'button',
-            text: on ? '禁用' : '启用',
+            text: on ? '收回' : '授予',
           })
-          btn.addEventListener('click', () => toggleOwner(owner, !on))
+          btn.addEventListener('click', () => setGranted(owner, !on))
           return el('div', { class: 'tool-group' }, [
             el('div', { class: 'tool-group-head' }, [
               el('span', { class: 'tool-group-label', text: owner }),

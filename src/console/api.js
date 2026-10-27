@@ -373,19 +373,19 @@ export function pluginToolToggle({ service, server, body }) {
 
   const owner = String(body?.owner ?? '').trim()
   if (!owner) throw new ApiError('bad-request', '缺少插件名（owner）', 400)
-  if (typeof body?.enabled !== 'boolean') {
-    throw new ApiError('bad-request', 'enabled 必须是布尔值', 400)
+  if (typeof body?.granted !== 'boolean') {
+    throw new ApiError('bad-request', 'granted 必须是布尔值', 400)
   }
 
-  const current = (cs.effective()?.tools?.disabledPlugins ?? []).map(String)
+  const current = (cs.effective()?.tools?.grantedPlugins ?? []).map(String)
   const next = new Set(current)
-  if (body.enabled) next.delete(owner)
-  else next.add(owner)
+  if (body.granted) next.add(owner)
+  else next.delete(owner)
 
   let result
   try {
     result = cs.update({
-      patch: { 'tools.disabledPlugins': [...next] },
+      patch: { 'tools.grantedPlugins': [...next] },
       revision: cs.revision,
       actor: String(body?.actor ?? '').trim() || 'console',
     })
@@ -401,8 +401,8 @@ export function pluginToolToggle({ service, server, body }) {
   return {
     ok: true,
     owner,
-    enabled: body.enabled,
-    disabledPlugins: [...next],
+    granted: body.granted,
+    grantedPlugins: [...next],
     revision: result.revision,
   }
 }
@@ -636,10 +636,7 @@ export function toolsCatalog({ service }) {
     internal,
     external,
     blocked,
-    /**
-     * 配置版本号。工具页的开关要写 `tools.disabledPlugins`，
-     * 而 `configStore.update` 强制要求 revision 匹配，不传会 409。
-     */
+    /** 配置版本号（工具页的授予开关走专用接口，不用它；留给其他需要的地方） */
     configRevision: service?.configStore?.revision ?? 0,
     config: {
       enabled: cfg.enabled !== false,
@@ -648,8 +645,8 @@ export function toolsCatalog({ service }) {
       qqWrite: cfg.qqWrite !== false,
       qqAdmin: cfg.qqAdmin === true,
       allowPluginTools: cfg.allowPluginTools !== false,
-      /** 被整体禁用的插件（按 owner）。工具页按这个渲染开关 */
-      disabledPlugins: (cfg.disabledPlugins ?? []).map(String),
+      /** 已授予的插件（按 owner）。**默认空 = 一个都不授予**，工具页按这个渲染开关 */
+      grantedPlugins: (cfg.grantedPlugins ?? []).map(String),
       internalAllow: cfg.internalAllow ?? [],
       externalAllow: cfg.externalAllow ?? [],
     },

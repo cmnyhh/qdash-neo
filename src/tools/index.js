@@ -752,16 +752,19 @@ export function applyToolPolicy(
   /** @type {Map<string, Function[]>} owner → 该插件在本会话里的 disposer */
   const pluginDisposers = new Map()
   /**
-   * 按插件关工具。
+   * 授予哪些插件的工具。
    *
-   * `allowPluginTools` 是总闸：一个插件的工具做危险操作，关掉它等于把**所有**插件
-   * 的工具一起摘掉。这里按 owner 逐个关，别的插件不受影响。
+   * **默认空 = 一个都不授予。** 插件能注册工具，但不能自己给自己授权 ——
+   * 否则装上一个插件就等于把它的全部能力交给模型，管理员没有决策点。
+   *
+   * 工具会出现在控制台「工具」页（看得见），但不进会话的 allow，模型拿不到。
    */
-  const blockedPlugins = new Set((config?.tools?.disabledPlugins ?? []).map(String))
+  const grantedPlugins = new Set((config?.tools?.grantedPlugins ?? []).map(String))
   if (pluginTools && config?.tools?.allowPluginTools !== false) {
     for (const d of pluginTools.defs()) {
-      if (blockedPlugins.has(String(d.owner ?? ''))) {
-        log('info', `qdash-neo: 插件「${d.owner}」的工具已按配置禁用，跳过 ${d.name}`)
+      if (!grantedPlugins.has(String(d.owner ?? ''))) {
+        // 不是错误：注册了但没授予，工具在控制台可见、模型拿不到
+        log('info', `qdash-neo: 插件「${d.owner}」的工具未授予，跳过 ${d.name}`)
         continue
       }
       if (kernelNames.has(d.name)) {
@@ -782,7 +785,7 @@ export function applyToolPolicy(
         })
         disposers.push(disposeTool)
 
-        // 按 owner 分别记账：`tools.disabledPlugins` 变更时要能精确摘掉某个插件的工具
+        // 按 owner 分别记账：`tools.grantedPlugins` 变更时要能精确摘掉某个插件的工具
         const owner = String(d.owner ?? '')
         if (!pluginDisposers.has(owner)) pluginDisposers.set(owner, [])
         pluginDisposers.get(owner).push(disposeTool)
@@ -926,7 +929,7 @@ export function applyToolPolicy(
     /**
      * 摘掉某个插件的全部工具。
      *
-     * `tools.disabledPlugins` 变更时用 —— 没有它的话"禁用"只对**新建会话**生效，
+     * `tools.grantedPlugins` 变更时用 —— 没有它的话"禁用"只对**新建会话**生效，
      * 已有会话里那个工具还能被调用，而界面上已经显示"已禁用"。
      *
      * @param {string} owner 插件名（注册工具时传的 owner）
@@ -945,6 +948,18 @@ export function applyToolPolicy(
       }
       pluginDisposers.delete(key)
       return list.length
+    },
+
+    /**
+     * 本会话当前挂了哪些插件的工具。
+     *
+     * `tools.grantedPlugins` 是白名单，收回权限时要找出"哪些该摘" ——
+     * 只能从会话这边问，因为配置里已经没有它的名字了。
+     *
+     * @returns {string[]}
+     */
+    pluginOwners() {
+      return [...pluginDisposers.keys()]
     },
 
     /** 本回合已经通过工具发过几条 */

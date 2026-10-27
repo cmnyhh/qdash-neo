@@ -106,7 +106,7 @@ test('插件工具：会被挂到会话上，并且进入 allow（否则 guard �
 
   applyToolPolicy(tools, {
     chatKey: 'g:1',
-    config: { tools: { enabled: true }, policy: {} },
+    config: { tools: { enabled: true, grantedPlugins: ['p', 'plugin-a', 'pa', 'pb', '未署名插件'] }, policy: {} },
     deps: {},
     pluginTools: reg,
   })
@@ -136,7 +136,7 @@ test('插件工具：execute 能拿到 chatKey（内核注入）', async () => {
 
   applyToolPolicy(tools, {
     chatKey: 'g:42',
-    config: { tools: { enabled: true }, policy: {} },
+    config: { tools: { enabled: true, grantedPlugins: ['p', 'plugin-a', 'pa', 'pb', '未署名插件'] }, policy: {} },
     deps: {},
     pluginTools: reg,
   })
@@ -169,7 +169,7 @@ test('插件工具：与内核同名时内核优先，插件那份被跳过', ()
 
   applyToolPolicy(tools, {
     chatKey: 'g:1',
-    config: { tools: { enabled: true }, policy: {} },
+    config: { tools: { enabled: true, grantedPlugins: ['p', 'plugin-a', 'pa', 'pb', '未署名插件'] }, policy: {} },
     deps: {},
     pluginTools: reg,
   })
@@ -179,7 +179,7 @@ test('插件工具：与内核同名时内核优先，插件那份被跳过', ()
   assert.notEqual(hits[0].description, '假的', '插件不能顶掉内核工具')
 })
 
-test('插件工具：可以按插件禁用，不影响别的插件', () => {
+test('插件工具：只授予白名单里的插件，其余不挂', () => {
   const tools = fakeTools()
   const reg = mkReg()
   reg.register({ name: 'a_tool', description: 'a', owner: 'plugin-a', execute: async () => ({}) })
@@ -187,7 +187,7 @@ test('插件工具：可以按插件禁用，不影响别的插件', () => {
 
   applyToolPolicy(tools, {
     chatKey: 'g:1',
-    config: { tools: { enabled: true, disabledPlugins: ['plugin-a'] }, policy: {} },
+    config: { tools: { enabled: true, grantedPlugins: ['plugin-b'] }, policy: {} },
     deps: {},
     pluginTools: reg,
   })
@@ -199,13 +199,13 @@ test('插件工具：可以按插件禁用，不影响别的插件', () => {
   assert.ok(tools.allow.includes('b_tool'))
 })
 
-test('插件工具：disabledPlugins 为空时全部照常挂载', () => {
+test('插件工具：grantedPlugins 为空时一个都不挂（安全默认）', () => {
   const tools = fakeTools()
   const reg = mkReg()
   reg.register({ name: 'x', description: 'x', owner: 'p', execute: async () => ({}) })
   applyToolPolicy(tools, {
     chatKey: 'g:1',
-    config: { tools: { enabled: true }, policy: {} },
+    config: { tools: { enabled: true, grantedPlugins: ['p', 'plugin-a', 'pa', 'pb', '未署名插件'] }, policy: {} },
     deps: {},
     pluginTools: reg,
   })
@@ -218,7 +218,7 @@ test('插件工具：可补挂到已存在的会话（不用删会话重建）',
   // 先建会话：此刻插件还没注册任何工具
   const state = applyToolPolicy(tools, {
     chatKey: 'g:1',
-    config: { tools: { enabled: true }, policy: {} },
+    config: { tools: { enabled: true, grantedPlugins: ['p', 'plugin-a', 'pa', 'pb', '未署名插件'] }, policy: {} },
     deps: {},
     pluginTools: reg,
   })
@@ -237,7 +237,7 @@ test('插件工具：可补挂到已存在的会话（不用删会话重建）',
   assert.equal(state.attachPluginTool(reg.defs()[0]), false, '重复补挂要短路，不能抛错')
 })
 
-test('插件工具：能按 owner 摘除（禁用后对已有会话生效）', () => {
+test('插件工具：能按 owner 摘除（收回后对已有会话生效）', () => {
   const tools = fakeTools()
   const reg = mkReg()
   reg.register({ name: 'a_tool', description: 'a', owner: 'pa', execute: async () => ({}) })
@@ -245,7 +245,7 @@ test('插件工具：能按 owner 摘除（禁用后对已有会话生效）', (
 
   const state = applyToolPolicy(tools, {
     chatKey: 'g:1',
-    config: { tools: { enabled: true }, policy: {} },
+    config: { tools: { enabled: true, grantedPlugins: ['p', 'plugin-a', 'pa', 'pb', '未署名插件'] }, policy: {} },
     deps: {},
     pluginTools: reg,
   })
