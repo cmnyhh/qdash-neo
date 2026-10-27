@@ -145,3 +145,43 @@ test('提示词：语音开启时提到 qq_send_voice 与 qq_speak，关闭时�
   assert.match(renderPrompt(p, { canSpeak: true }), /【说话方式】/)
   assert.doesNotMatch(renderPrompt(p), /【说话方式】/)
 })
+
+/* ---------------- 出站钩子 ---------------- */
+
+test('出站钩子：只能挂一个；改写生效；抛错按原样发送', async () => {
+  const { dir, lib, done } = mkLib()
+  try {
+    writeFileSync(join(dir, 'a.mp3'), Buffer.alloc(10))
+    const sent = []
+    lib.deliver = (k, segs, meta) => sent.push({ k, meta })
+
+    lib.onSendVoice(() => ({ label: '被插件改过' }))
+    assert.throws(() => lib.onSendVoice(() => null), /只能挂一个/, '多个钩子会变成"谁后注册谁说了算"')
+
+    await lib.send({ chatKey: 'g:1', file: 'a.mp3', label: '原始' })
+    assert.match(sent[0].meta.text, /被插件改过/)
+
+    // 钩子抛错：不能把语音一起吞掉
+    lib.sendHook = null
+    lib.onSendVoice(() => {
+      throw new Error('钩子炸了')
+    })
+    await lib.send({ chatKey: 'g:1', file: 'a.mp3', label: '原样' })
+    assert.match(sent[1].meta.text, /原样/, '钩子坏了也要照常发出去')
+  } finally {
+    done()
+  }
+})
+
+test('出站钩子：改写后的文件同样要过体检', async () => {
+  const { dir, lib, done } = mkLib()
+  try {
+    writeFileSync(join(dir, 'a.mp3'), Buffer.alloc(10))
+    lib.deliver = () => {}
+    lib.onSendVoice(() => ({ file: join(dir, '不存在.mp3') }))
+
+    await assert.rejects(() => lib.send({ chatKey: 'g:1', file: 'a.mp3' }), /不存在/, '钩子不能成为绕过检查的口子')
+  } finally {
+    done()
+  }
+})

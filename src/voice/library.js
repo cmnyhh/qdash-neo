@@ -47,6 +47,8 @@ export class VoiceLibrary {
     this.log = log
     /** @type {((chatKey: string, segments: object[], meta?: object) => any)|null} 出站出口 */
     this.deliver = deliver
+    /** @type {Function|null} 出站钩子（见 `onSendVoice`），只允许一个 */
+    this.sendHook = null
     /** chatKey → 发送时间戳[]（只保留一小时内） */
     this.sent = new Map()
   }
@@ -190,6 +192,29 @@ export class VoiceLibrary {
   }
 
   /**
+   * 注册出站钩子：在语音真正发出**之前**改写它。
+   *
+   * 只允许挂一个。多个钩子串起来会变成"谁后注册谁说了算"，
+   * 而晚注册的那个往往只是碰巧加载得慢 —— 排查起来是噩梦。
+   *
+   * 钩子签名 `({ chatKey, file, label }) => ({ file?, label? } | null)`：
+   *   - 返回对象 → 用返回值里的字段覆盖
+   *   - 返回 null / undefined → 原样发送
+   *   - 抛错 → 记 warn 后**原样发送**（钩子坏了不该连话都发不出去）
+   *
+   * @param {(req: { chatKey: string, file: string, label: string }) => any} fn
+   * @returns {() => void} 取消注册
+   */
+  onSendVoice(fn) {
+    if (typeof fn !== 'function') throw new Error('onSendVoice 需要一个函数')
+    if (this.sendHook) throw new Error('onSendVoice 只能挂一个（已有插件占用）')
+    this.sendHook = fn
+    return () => {
+      if (this.sendHook === fn) this.sendHook = null
+    }
+  }
+
+  /**
    * 发一条语音。**这是语音唯一的出口** —— 内核工具和插件都走这里。
    *
    * 顺序是固定的，不能换：
@@ -229,11 +254,37 @@ export class VoiceLibrary {
      * `[object Object]` 进上下文），也不能放裸路径（把本机目录写进模型可见的历史）。
      */
     const shown = String(label ?? '').trim() || basename(target)
-    const tag = `[语音] ${shown}`
 
-    const result = await this.deliver(chatKey, [{ type: 'record', data: { file: target } }], { text: tag })
+    /**
+     * 出站钩子：插件可以在真正发出前改写（比如换成合成音频）。
+     * 钩子抛错一律按"没挂钩子"处理 —— 它可能是第三方代码，不该连累发送。
+     */
+    let outFile = target
+    let outLabel = shown
+    if (typeof this.sendHook === 'function') {
+      try {
+        const r = await this.sendHook({ chatKey, file: target, label: shown })
+        if (r && typeof r === 'object') {
+          if (typeof r.file === 'string' && r.file.trim()) outFile = r.file.trim()
+          if (typeof r.label === 'string' && r.label.trim()) outLabel = r.label.trim()
+        }
+      } catch (err) {
+        this.log(
+          'warn',
+          `qdash-neo: 出站钩子抛错，按原样发送 name=${err?.name} msg=${err?.message}`,
+        )
+      }
+    }
+    // 改写后的文件同样要过体检：钩子不能成为绕过体积/格式检查的口子
+    if (outFile !== target) {
+      if (!existsSync(outFile)) throw new Error(`钩子返回的音频文件不存在：${basename(outFile)}`)
+      this.inspect(outFile)
+    }
+
+    const tag = `[语音] ${outLabel}`
+    const result = await this.deliver(chatKey, [{ type: 'record', data: { file: outFile } }], { text: tag })
     this.commit(chatKey)
-    return { file: target, label: shown, result }
+    return { file: outFile, label: outLabel, result }
   }
 
   /** 分条格式（控制台用） */

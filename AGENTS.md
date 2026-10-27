@@ -436,6 +436,10 @@ bash scripts/start.sh     # 启动，直接打印带 token 的控制台地址
 | `console.registerStatic` | ❌ 未实现（高风险：路径穿越 + CSP） |
 | `fetch` | ❌ 未实现（**建议不做**：插件是可信代码，绕过内核直接用原生 fetch 也行，内核提供它收益≈0 而风险自负） |
 | `judgeApi.registerProvider` | ✅（2026-10-27）：插件抛错按弃权跳过，不拖垮判定链 |
+| `on(...)` 事件 | ✅（2026-10-27）：`message/inbound` / `message/dropped` / `turn/end`，只读旁听 |
+| `voice.onSendVoice` | ✅（2026-10-27）：出站钩子，只允许一个，抛错按原样发送 |
+| `capabilities` | ✅（2026-10-27）：只读清单，**不是安装期校验**（拿不到 manifest） |
+| `outboxApi.forPlugin` | ✅（2026-10-27）：插件发文本/图片，来源标记不可伪造 |
 
 ## 7. 改文档的纪律
 

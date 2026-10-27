@@ -29,6 +29,7 @@ import { syncInstructions } from './session/instructions.js'
 import { applyToolPolicy, parseChatKey } from './tools/index.js'
 import { SessionRouter } from './session/router.js'
 import { Store } from './store/db.js'
+import { PluginEvents } from './plugin/events.js'
 import { PluginOutbox } from './plugin/outbox.js'
 import { PluginSettings } from './plugin/settings.js'
 import { PluginStorage } from './plugin/storage.js'
@@ -241,6 +242,38 @@ export class QdashNeoService {
       /** @param {string} plugin 插件自己的名字 @returns {{ sendText: Function, sendSegments: Function }} */
       forPlugin: plugin => this.pluginOutbox.forPlugin(plugin),
     }
+
+    /**
+     * 插件可订阅的内核事件（只读旁听）。
+     *
+     * 门面只暴露 `on()`，不暴露 `emit()` —— 发事件是内核的事。
+     * 插件之间想互相通信应该走自己的存储，而不是借这里当消息总线。
+     */
+    this.pluginEvents = new PluginEvents({ log: this.log })
+    this.on = (event, handler) => this.pluginEvents.on(event, handler)
+
+    /**
+     * 能力清单（只读）。
+     *
+     * **这不是安装期校验** —— 我们拿不到插件的 manifest，DSH 也不会替我们读。
+     * 它的用途是让插件自己判断：`if (!ctx.qdashNeo.capabilities['console-static'])`
+     * 就退回声明式选项卡，而不是调一个不存在的方法、拿到一个看不懂的 TypeError。
+     *
+     * 新增能力时同步这里和文档 §0.1，否则插件作者只能靠试。
+     */
+    this.capabilities = Object.freeze({
+      'console-tab': true,
+      'console-static': false,
+      tools: true,
+      settings: true,
+      storage: true,
+      outbox: true,
+      events: true,
+      'voice-send': true,
+      'voice-hook': true,
+      'judge-provider': true,
+      fetch: false,
+    })
     /** @type {{ userId?: string, nickname?: string }|null} 登录信息，用来拼"机器人的称呼" */
     this.login = null
     // withheld：tool 模式下「说了但没调发送工具」的次数 —— 用来核对
@@ -787,6 +820,37 @@ export class QdashNeoService {
   /**
    * @param {object} raw OneBot 原始事件
    */
+  /**
+   * 包一层 `turn/end` 事件。
+   *
+   * **不塞进 `openGroupReply` 内部**：那两个方法里有十几处提前 return，
+   * 逐个补 emit 必然漏，而漏掉的那个往往正是出问题时最需要看的那条路径。
+   * 包在外面就一处，无论如何都会发。
+   *
+   * @param {'group'|'private'} kind
+   * @param {object} ev
+   * @param {() => Promise<any>} run
+   */
+  async #withTurnEvent(kind, ev, run) {
+    const started = Date.now()
+    let failure = null
+    try {
+      return await run()
+    } catch (err) {
+      failure = err
+      throw err
+    } finally {
+      this.pluginEvents.emit('turn/end', {
+        kind,
+        chatKey: ev.chatKey,
+        inbound: ev,
+        costMs: Date.now() - started,
+        // 失败也要发：插件想知道"这一轮为什么没回"，就不能只看到成功的
+        error: failure ? String(failure?.message ?? failure) : null,
+      })
+    }
+  }
+
   handleInbound(raw) {
     const ev = normalizeEvent(raw, { selfId: this.config?.onebot?.selfId })
     if (!ev) return
@@ -795,6 +859,15 @@ export class QdashNeoService {
     const ing = this.gates.ingest(ev)
     if (!ing.ok) {
       this.stats.dropped += 1
+      /**
+       * 被闸门挡住的消息。**在落库之前发**：插件看到的 reason 与内核日志里的一致，
+       * 不用自己去猜"为什么没回"。
+       */
+      this.pluginEvents.emit('message/dropped', {
+        ...ev,
+        reason: ing.reason,
+        note: ing.note ?? '',
+      })
       const level = ing.reason === REASON.GROUP_DISABLED ? 'debug' : 'info'
       this.log(
         level,
@@ -823,14 +896,31 @@ export class QdashNeoService {
      * 落库、进上下文、入批都是内存/短 SQL 操作，没有并发风险，直接同步做；
      * 只有真正要唤起模型的 `openGroupReply` 才进串行链。
      */
+    /**
+     * 过闸的入站消息。
+     *
+     * 放在分叉**之前**（群/私聊都算），但**不保证一定会回复** ——
+     * 后面还有批窗口、判定、沉睡这些环节。想只要"真要回复"的那种，
+     * 订阅 `turn/end` 更准。
+     */
+    this.pluginEvents.emit('message/inbound', ev)
+
     if (ev.kind === 'group') {
       const next = this.prepareGroupInbound(ev)
-      if (next === 'reply') this.push(ev.chatKey, () => this.openGroupReply(ev))
+      if (next === 'reply') {
+        this.push(ev.chatKey, () =>
+          this.#withTurnEvent('group', ev, () => this.openGroupReply(ev)),
+        )
+      }
       return
     }
     // 私聊同理：落库/入批同步做，只有真正要唤起模型的那一步进串行链
     const nextPrivate = this.preparePrivateInbound(ev)
-    if (nextPrivate === 'reply') this.push(ev.chatKey, () => this.openPrivateReply(ev))
+    if (nextPrivate === 'reply') {
+      this.push(ev.chatKey, () =>
+        this.#withTurnEvent('private', ev, () => this.openPrivateReply(ev)),
+      )
+    }
   }
 
   /** 私聊：白名单已在 trigger 里把关，这里只有落库 + 投递 */
