@@ -315,11 +315,21 @@ export class QdashNeoService {
      */
     this.card = {
       /**
+       * **必须是箭头函数。**
+       *
+       * 写成 `async share(...)` 的话，`this` 绑定到 `card` 这个对象字面量上，
+       * 里面的 `this.log` / `this.enqueueSegmentsOut` 全部炸：
+       *
+       *     Error: this.log is not a function
+       *
+       * 而调用方 `card.share(...)` 看起来完全正常，模型给的参数也对，
+       * 错误发生在最后一步 —— 最不该失败的地方。
+       *
        * @param {{ chatKey?: string, kind?: string, title?: string, desc?: string,
        *           cover?: string, url?: string }} opts
        * @returns {Promise<{ ok: boolean, mode: 'card'|'text' }>}
        */
-      async share({ chatKey, kind = 'bili', title = '', desc = '', cover = '', url = '' } = {}) {
+      share: async ({ chatKey, kind = 'bili', title = '', desc = '', cover = '', url = '' } = {}) => {
         const key = String(chatKey ?? '').trim()
         if (!key) throw new Error('card.share 需要 chatKey')
 
@@ -340,8 +350,18 @@ export class QdashNeoService {
             picUrl: pic,
             jumpUrl: link,
           })
-          const ark = r?.data?.data
-          if (ark) {
+          /**
+           * 取值兼容两种形状：
+           *
+           *   - `client.call` 原样返回整个回包 → `r.data.data`
+           *   - 某些实现/中间层会先解一层 → `r.data`
+           *
+           * 只认前者的话，`r.data.data` 是 undefined，会静默走降级 ——
+           * 表现出来就是"参数全对、卡片变成文字"，而日志里什么都没有
+           * （降级日志是 info 级，DSH 里看不到）。
+           */
+          const ark = r?.data?.data ?? (r?.app ? r : null) ?? r?.data ?? null
+          if (ark && typeof ark === 'object') {
             this.enqueueSegmentsOut(
               key,
               [{ type: 'json', data: { data: JSON.stringify(ark) } }],
@@ -349,13 +369,19 @@ export class QdashNeoService {
             )
             return { ok: true, mode: 'card' }
           }
+          console.log(
+            `qdash-neo: 卡片未生成（回包里没有 ark）${key} keys=${JSON.stringify(Object.keys(r ?? {}))}`,
+          )
         } catch (err) {
           /**
            * 换实现、没这个 action、签名失败 —— 都走降级。
            *
            * **不能因此失败**：卡片是锦上添花，链接才是内容。
+           *
+           * 用 console.log 而不是 this.log：后者是 info 级，
+           * DSH 里看不到 —— 于是"为什么降级"永远查不出来。
            */
-          this.log('info', `qdash-neo: 卡片不可用，降级为文本 ${key} msg=${err?.message}`)
+          console.log(`qdash-neo: 卡片不可用，降级为文本 ${key} msg=${err?.message}`)
         }
 
         this.enqueueOut(key, [head, body, link].filter(Boolean).join('\n'), { fromTool: 'card' })
