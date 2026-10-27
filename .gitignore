@@ -1,0 +1,33 @@
+# 依赖（npm i 可重建，加起来几百 MB）
+node_modules/
+.pnpm-store/
+
+# 探针运行产物
+*.log
+_scratch/
+
+# 原项目只读参考副本（Derpyu520/qq-bridge，clone 而来，不进版本库）
+_ref/
+cj*.txt
+home*.html
+probe-client-served.js
+
+# 编辑器 / 系统
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# 本地覆盖（不要提交本机路径、token、凭据）
+.env
+.env.local
+*.local.yml
+
+# 长期调试进程的控制台日志（`npm run console` 重定向到这里）
+_log/
+
+# npm pack 的产物（1MB 二进制，发到 registry 或临时传阅即可，不进版本库）
+*.tgz
+
+# 编辑器 / AI 助手的本地数据（不是项目内容）
+.codebuddy/

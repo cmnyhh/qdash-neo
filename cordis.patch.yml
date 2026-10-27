@@ -1,0 +1,8 @@
+# qdash-neo 的插件声明行。
+#
+# 「安装 ≠ 启用」：这条 insert 是唯一真相源，不扫目录。
+# 本地开发时 DSH 用 `--patch` 覆盖层追加同一行（见 docs/qdash-neo/05-施工计划.md），
+# 装到 profile 里之后由本文件生效。
+- insert:
+    - id: qdash-neo
+      name: 'qdash-neo'

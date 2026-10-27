@@ -1,0 +1,4 @@
+# M0 探针 overlay：在 profile 层之后追加一个探针插件行
+- insert:
+    - id: qdn-probe
+      name: 'qdn-probe'

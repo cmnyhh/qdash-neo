@@ -1,0 +1,19 @@
+# 统一换行：容器里跑的是 Linux，CRLF 会让 `#!/bin/sh` 的脚本直接报
+# `/bin/sh^M: bad interpreter`，而这类错误在 CI 日志里很难一眼看出来。
+* text=auto eol=lf
+
+# Windows 脚本保留 CRLF（PowerShell 对 LF 兼容，但约定如此）
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制不要做换行转换
+*.tgz binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary

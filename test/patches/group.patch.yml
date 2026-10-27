@@ -1,0 +1,42 @@
+# 群场景集成测试 overlay：连本地假 OneBot（test/fake-onebot.mjs FAKE_SCENARIO=group），
+# 模型两层都走 test/fake-model（agent 回答 + 判定 JSON）。
+#
+# 断言目标：连续 10 条群消息（含非白名单成员）→ 回复 ≤ 3（groupReplyQuota），
+# 且至少回 1 条；判定用的 prompt 里能看到更早的群聊记录（`[[JUDGE]]` 日志可查）。
+#
+# 跑法见 docs/qdash-neo/05 §M4 或 README「集成测试」：注意要设 QDN_DB 隔离数据库。
+- insert:
+    - id: qdn-fake-model
+      name: 'qdn-fake-model'
+
+    - id: qdash-neo
+      name: 'qdash-neo'
+      config:
+        onebot:
+          wsUrl: 'ws://127.0.0.1:3999'
+          token: ''
+          selfId: '100000001'
+        agent:
+          # provider/model 由假模型注册，preset 留空（qq-chat 还没在 patch 里声明）
+          provider: 'qdn-fake'
+          model: 'fake-1'
+          preset: ''
+        policy:
+          # 白名单只管私聊；群消息由 groupTrigger 决定
+          whitelist: ['10001']
+          groupEnabled: true
+          groupTrigger: 'judge'
+          groupReplyQuota:
+            windowMinutes: 10
+            maxReplies: 3
+          ratePerMinute: 100
+        judge:
+          enabled: true
+          provider: 'qdn-fake'
+          model: 'fake-1'
+          timeoutMs: 4000
+          threshold: 0.6
+          maxPerMinute: 50
+          contextLines: 20
+          contextMaxChars: 3000
+          contextTtlMinutes: 60

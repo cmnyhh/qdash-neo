@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light" />
+  <title>登录 · qdash-neo</title>
+  <link rel="icon" href="assets/brand-mark.png" type="image/png" />
+  <link rel="stylesheet" href="assets/theme.css" />
+</head>
+<body class="login-body">
+  <main class="login-shell">
+    <div class="login-card">
+      <!-- 登录页放整张品牌图（图形 + wordmark，透明底），所以不再另排文字 -->
+      <div class="login-brand">
+        <img class="login-logo" src="assets/brand-logo.png" alt="qdash-neo" width="88"
+             onerror="this.style.display='none'" />
+      </div>
+
+      <h1 class="login-title">登录</h1>
+      <p class="login-sub">控制台能看到全部聊天记录与配置，必须登录后使用。</p>
+
+      <form id="login-form" class="login-form" autocomplete="on">
+        <label class="login-field">
+          <span class="login-label">用户名</span>
+          <input id="username" name="username" class="input login-input" type="text"
+                 autocomplete="username" value="admin" required />
+        </label>
+        <label class="login-field">
+          <span class="login-label">口令</span>
+          <input id="password" name="password" class="input login-input" type="password"
+                 autocomplete="current-password" required autofocus />
+        </label>
+
+        <p id="login-error" class="login-error" role="alert" aria-live="polite" hidden></p>
+
+        <button id="login-submit" class="btn btn-primary login-submit" type="submit">登录</button>
+      </form>
+
+      <p class="login-hint">口令见内核启动日志，或由 <code>console.password</code> 指定。</p>
+    </div>
+  </main>
+
+  <script type="module" src="assets/login.js"></script>
+</body>
+</html>

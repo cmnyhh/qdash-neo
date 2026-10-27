@@ -1,0 +1,64 @@
+name: build
+
+# 只有一条交付路径：npm 包。
+# 不构建镜像 —— 这个插件跑在宿主进程里，用户自己装 DSH 比分发镜像更直接
+# （镜像还得解决 profile 初始化，收益不抵复杂度）。
+on:
+  push:
+    branches: [master, main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+env:
+  NODE_VERSION: '22'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      # dependencies 为空，测试只用 node:test 内置，不需要 npm ci
+      - run: npm test
+
+  # 只在打 tag 时发布，避免每次 push 占用版本号
+  publish:
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          registry-url: https://registry.npmjs.org
+
+      - name: 版本号与 tag 一致性校验
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          PKG="$(node -p "require('./package.json').version")"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::tag v$TAG 与 package.json 的 $PKG 不一致，拒绝发布"
+            exit 1
+          fi
+          echo "版本一致：$PKG"
+
+      # job 级 `if` 读不到 secrets（GitHub 限制：job.if 里引用 secrets 恒为空），
+      # 只能在 step 级判断。没配 NPM_TOKEN 就跳过，而不是让流水线标红。
+      - name: 发布到 npm
+        if: env.NPM_TOKEN != ''
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: 未配置 NPM_TOKEN，跳过发布
+        if: env.NPM_TOKEN == ''
+        run: |
+          echo "::notice::未配置 NPM_TOKEN，已跳过发布。"
+          echo "需要发布时：Settings → Secrets and variables → Actions → 新建 NPM_TOKEN"
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
