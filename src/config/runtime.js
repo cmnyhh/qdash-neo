@@ -101,7 +101,13 @@ const GROUP_LAYOUT = [
       'policy.groupTriggerKeywords',
       'policy.groupMentionOnly',
       'policy.groupToolGuard',
+      'tools.allowPluginTools',
     ],
+  },
+  {
+    key: 'voice',
+    label: '语音库',
+    paths: ['voice.*'],
   },
   {
     key: 'pacing',

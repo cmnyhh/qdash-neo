@@ -159,6 +159,18 @@ export async function createConfig() {
         .default(true)
         .description('QQ 写能力：发消息、发图、发表情、撤回、戳一戳、表情回应（都走出站队列）'),
       qqAdmin: Schema.boolean().default(false).description('QQ 管理能力（踢人）；默认关，误用代价太大'),
+      /**
+       * 让插件注册的工具出现在模型可见清单里。
+       *
+       * 默认开 —— 装插件本来就是为了加能力，默认关会让"装了没反应"变成常态。
+       * 留这个开关是为了出问题时能一键摘掉：插件工具忘了做参数校验、或者某个插件
+       * 注册了做危险操作的工具，关掉它比卸载插件快。
+       *
+       * 关掉不等于插件不加载，只是它的工具不会被挂到会话上。
+       */
+      allowPluginTools: Schema.boolean()
+        .default(true)
+        .description('允许插件注册的工具挂到会话上（关掉则插件工具对模型不可见）'),
       adminOwners: Schema.array(Schema.string())
         .default([])
         .description(
@@ -209,6 +221,29 @@ export async function createConfig() {
      * 真正的闸在 `openProactive`：安静时段是硬性的（不靠模型自觉），
      * 每日上限兜底（防它一天排十次）。
      */
+    /**
+     * 语音库：把准备好的音频当 QQ 语音发出去。
+     *
+     * **默认关**。语音是"开口说话"的强表达，而且它需要你先往库里放音频——
+     * 库是空的却开着开关，模型只会得到一串错误。放几个 .mp3/.silk 再打开。
+     *
+     * **不做 TTS**。合成质量、音色一致性、外部服务依赖都是另一条产品线的事；
+     * 把它塞进来等于要求用户先配一个 TTS 才能用语音。
+     */
+    voice: Schema.object({
+      enabled: Schema.boolean().default(false).description('允许模型发语音（默认关，需先往语音库放文件）'),
+      dir: Schema.string()
+        .default('')
+        .description('语音库目录；留空用 <DSH_HOME>/qdash-voice（不存在时自动创建）'),
+      maxSeconds: Schema.natural().default(60).description('单条语音最长秒数，超过拒发'),
+      maxBytes: Schema.natural().default(8 * 1024 * 1024).description('单个音频文件大小上限（字节）'),
+      maxPerMinute: Schema.natural().default(2).description('每分钟最多发几条语音（0 = 不限）'),
+      maxPerHour: Schema.natural().default(10).description('每小时最多发几条语音（0 = 不限）'),
+      allowAbsolutePath: Schema.boolean()
+        .default(false)
+        .description('允许用绝对路径发任意本地音频；默认只从语音库目录取（防 prompt injection 读任意文件）'),
+    }).description('语音库（默认关）'),
+
     proactive: Schema.object({
       enabled: Schema.boolean().default(false).description('允许模型排期后主动开口（默认关）'),
       quietHours: Schema.array(Schema.string())

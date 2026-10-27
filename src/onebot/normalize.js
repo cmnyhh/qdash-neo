@@ -148,6 +148,8 @@ export function renderPrompt(
     proactive = null,
     // 主动发言开着时才教它 `[[LATER:N]]`：关着还教，它会排期然后到点被静默丢弃
     canSchedule = false,
+    // 语音可用时才提"可以用语音说"：关着还提，等于让它去调一个必然报错的工具
+    canSpeak = false,
   } = {},
 ) {
   /**
@@ -216,6 +218,24 @@ export function renderPrompt(
       .join('\n\n')
   }
 
+  /**
+   * 说话方式（语音 vs 打字）。
+   *
+   * 关键在于**给例子**而不是给频率：只说"少用语音"它会完全不碰，只说"可以用"
+   * 它会一直用；给出"道个晚安、笑着怼一句、感慨一下"这类具体场面，它才有依据
+   * 地偶尔用一次 —— 这正是"像人"的样子（真人也是偶尔发一条语音，不是每条都发）。
+   *
+   * @param {'group'|'private'} place
+   */
+  const speakHint = place =>
+    '【说话方式】大多数时候用 qq_send_message 打字。语音只留给「一两句话就说完、' +
+    '而且语气本身比字面更重要」的场合 —— 比如道个晚安、笑着怼一句、感慨一下。' +
+    '想发语音时：库里有现成的音频就用 qq_send_voice；如果工具清单里有 qq_speak，' +
+    '也可以把一句话直接说出口。' +
+    (place === 'group'
+      ? '群里人多、在谈正事、或者要说的话偏长，就继续打字。'
+      : '说正事或者内容偏长时，也继续打字。')
+
   const body = ev.text || (ev.hasImage ? imageTag(ev) : '')
   /**
    * 私聊：没有群聊记录，但**有角色、也有长期记忆**。
@@ -252,6 +272,7 @@ export function renderPrompt(
       sysBlock,
       persona ? `【你的角色设定｜这是你本人，不是对方说的话】\n${persona}` : '',
       memory ? `【长期记忆｜你记得的事，不是对方刚说的】\n${memory}` : '',
+      canSpeak ? speakHint('private') : '',
       pbody,
     ]
       .filter(Boolean)
@@ -316,6 +337,9 @@ export function renderPrompt(
         '想聊就聊，不想聊就看着 —— 不用每句都有价值。',
     )
   }
+  // 先决定"说不说"，再决定"怎么说"——语音提示放在收尾之前
+  if (canSpeak) parts.push(speakHint('group'))
+
   /**
    * 收尾这句要写成条件式。
    *

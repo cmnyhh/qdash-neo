@@ -116,7 +116,13 @@ function renderJson(value) {
  * 不逐工具写精确 schema 是有意的：这些工具的输出就是上游 API 的透传，
  * 声明得越精确，上游加字段就越容易崩。这里只保证"是合法 JSON 值"。
  */
-const JSON_OUTPUT = {
+/**
+ * 统一的 output 声明。
+ *
+ * 导出是为了让插件工具复用同一份形状 —— 插件手写 JSON Schema 既啰嗦又容易
+ * 漏 `additionalProperties`，混起来还会让模型看到两种风格的返回值描述。
+ */
+export const JSON_OUTPUT = {
   /**
    * **必须用 `oneOf`，不能用 `anyOf`**。
    *
@@ -165,6 +171,8 @@ export function createQqTools({
   ownerIds = null,
   /** 这次触发回复的消息发送者 QQ 号；`qq_kick` 用它做身份校验 */
   senderId = null,
+  /** 语音库（`VoiceLibrary` 实例）；为 null 时语音工具不注册 */
+  voice = null,
   config = {},
   log = () => {},
 }) {
@@ -445,11 +453,46 @@ export function createQqTools({
     },
   )
 
-  const sendSegments = async segments => {
+  /**
+   * 发消息段。
+   * @param {object[]} segments
+   * @param {{ text?: string }} [meta] `text` 是给人看的标签（`[语音] 晚安`），会落库
+   */
+  const sendSegments = async (segments, meta = {}) => {
     if (!enqueueSegments) throw new Error('出站队列不支持消息段')
-    enqueueSegments(chatKey, segments, { fromTool: 'qq_send_segment' })
+    enqueueSegments(chatKey, segments, { fromTool: 'qq_send_segment', ...meta })
     sent.count += 1
     return { ok: true, queued: true }
+  }
+
+  /**
+   * 语音。
+   *
+   * 走 `record` 段，和图片共用同一条出站链路（限流、死信、落库都生效）。
+   * 路径解析与发送额度都在 `VoiceLibrary` 里 —— 那里是唯一入口，
+   * 否则很容易出现"某个调用点忘了查穿越"。
+   */
+  if (voice) {
+    tool(
+      'qq_send_voice',
+      '往当前会话发一条语音库里的音频。name 传文件名（不带路径），有哪些文件用 qq_voice_list 查。' +
+        '**语音是"语气比字面更重要"时才用的东西**：一两句就说完、情绪明显、或者懒得打字。' +
+        '说正事、内容偏长、群里人多的时候，用 qq_send_message 打字更合适。',
+      { name: '语音库里的文件名，如 hi.mp3' },
+      async args => {
+        /**
+         * 发送、体检、限流、落库全在 `voice.send` 里 ——
+         * 工具这层只做参数传递，不多写一条路径，避免防线分叉。
+         */
+        const r = await voice.send({ chatKey, file: args.name, label: args.name })
+        return { ok: true, queued: true, spoke: r.label }
+      },
+    )
+
+    tool('qq_voice_list', '列出语音库里可用的音频文件。', {}, async () => ({
+      ok: true,
+      files: voice.list().map(f => f.name),
+    }))
   }
 
   tool(
@@ -607,7 +650,10 @@ export function createQqTools({
  * @param {object} opts
  * @returns {{ names: string[], missing: string[], denied: string[], dispose: Function }|null}
  */
-export function applyToolPolicy(tools, { chatKey, config, deps, log = () => {}, withGuard = true }) {
+export function applyToolPolicy(
+  tools,
+  { chatKey, config, deps, log = () => {}, withGuard = true, pluginTools = null },
+) {
   if (!tools || typeof tools.register !== 'function') return null
   if (config?.tools?.enabled === false) {
     /**
@@ -657,6 +703,13 @@ export function applyToolPolicy(tools, { chatKey, config, deps, log = () => {}, 
   }
   // 记忆工具只在记忆开着时注册（关了还挂一个"记不下来"的工具只会浪费 schema 预算）
   const includeMemory = config?.memory?.enabled === true
+  /**
+   * 语音工具只在语音开着时注册。
+   *
+   * 挂了但必然报错是最浪费的一种情况：模型会调一次、读错误、再换个说法调一次，
+   * 一整轮就这么没了 —— 而它本来可以直接打字。
+   */
+  const includeVoice = config?.voice?.enabled === true
 
   const wantedQq = new Set()
   for (const d of created.defs) {
@@ -667,6 +720,7 @@ export function applyToolPolicy(tools, { chatKey, config, deps, log = () => {}, 
       continue
     }
     if (!includeMemory && d.name === 'memory_add') continue
+    if (!includeVoice && (d.name === 'qq_send_voice' || d.name === 'qq_voice_list')) continue
     wantedQq.add(d.name)
   }
 
@@ -679,6 +733,47 @@ export function applyToolPolicy(tools, { chatKey, config, deps, log = () => {}, 
       // 重名（宿主已有同名工具）不该让会话建不起来
       log('warn', `qdash-neo: 注册工具 ${d.name} 失败 msg=${err?.message}`)
       wantedQq.delete(d.name)
+    }
+  }
+
+  /**
+   * 插件工具。
+   *
+   * 位置很关键，三处都不能挪：
+   *   - 在 `wantedQq` 之后 → 才能判重名
+   *   - 在 `schemas()` 之前 → 才进得了 `available`（否则算 allow 时它还"不存在"）
+   *   - 在 `guard` 之前 → 名字才来得及并进 `allow`
+   *
+   * **重名判定用 `created.defs` 而不是 `wantedQq`**：被 `qqWrite=false` 过滤掉的内核工具
+   * 不在 `wantedQq` 里，但插件顶替它同样危险（关掉的能力被插件悄悄打开）。
+   */
+  const kernelNames = new Set(created.defs.map(d => d.name))
+  const pluginNames = []
+  if (pluginTools && config?.tools?.allowPluginTools !== false) {
+    for (const d of pluginTools.defs()) {
+      if (kernelNames.has(d.name)) {
+        log('warn', `qdash-neo: 插件工具 ${d.name} 与内核同名，已跳过（内核优先）`)
+        continue
+      }
+      try {
+        /**
+         * 包一层把 `chatKey` 传进去。
+         *
+         * 内核工具靠闭包拿到 `chatKey`，插件工具没有那个闭包 ——
+         * 而"发给哪个会话"是它唯一必须知道的上下文。`exec` 是 DSH 的调用上下文，
+         * 里面没有 `chatKey`，所以在这里注入，插件侧就是 `execute(args, { chatKey })`。
+         */
+        disposers.push(
+          tools.register({
+            ...d,
+            execute: (args, exec) => d.execute(args, { ...(exec ?? {}), chatKey }),
+          }),
+        )
+        pluginNames.push(d.name)
+      } catch (err) {
+        // 重名（宿主或别的插件已注册）不该让会话建不起来
+        log('warn', `qdash-neo: 注册插件工具 ${d.name} 失败 msg=${err?.message}`)
+      }
     }
   }
 
@@ -699,6 +794,25 @@ export function applyToolPolicy(tools, { chatKey, config, deps, log = () => {}, 
 
   // 只保留真正注册成功的 QQ 工具 + 清单里存在的外部项
   const allow = resolved.allow.filter(name => wantedQq.has(name) || available.includes(name))
+
+  /**
+   * 插件工具并入白名单。
+   *
+   * `guard` 是**正面白名单**：不在 `allow` 里的一律拒绝。而 `allow` 来自
+   * `resolveAllowed`，它只认 `catalog.js` 与内置安全模式 —— 插件工具永远不会在里面。
+   * 不并进来就会「注册成功、调用被拒」，而且日志只在调用那一刻出现，
+   * 排查的人通常不会想到是建会话时的白名单算漏了。
+   *
+   * 仍然过一遍 `isDenied()`：插件注册期已经拦过一次，这里是第二道
+   * （`allowPluginTools` 关掉再打开、或有人直接改注册表时兜底）。
+   */
+  for (const name of pluginNames) {
+    if (isDenied(name)) {
+      log('warn', `qdash-neo: 插件工具 ${name} 命中高危名单，未并入白名单`)
+      continue
+    }
+    if (!allow.includes(name)) allow.push(name)
+  }
 
   let restore = null
   try {

@@ -29,6 +29,10 @@ import { syncInstructions } from './session/instructions.js'
 import { applyToolPolicy, parseChatKey } from './tools/index.js'
 import { SessionRouter } from './session/router.js'
 import { Store } from './store/db.js'
+import { PluginSettings } from './plugin/settings.js'
+import { PluginStorage } from './plugin/storage.js'
+import { PluginToolRegistry } from './plugin/tools.js'
+import { VoiceLibrary } from './voice/library.js'
 
 /**
  * 工具策略的取舍（`tools/index.js` 里实现，这里只留结论）：
@@ -144,6 +148,47 @@ export class QdashNeoService {
     this.atLookaheadMs = Number.isFinite(jc.atLookaheadMs) ? jc.atLookaheadMs : 2000
     /** @type {Memory|null} 懒创建：start() 里 store 就绪后才有 */
     this.memory = null
+    /** @type {VoiceLibrary|null} 语音库：路径防护与发送额度都收在它手里 */
+    this.voice = null
+    /**
+     * 插件工具登记表。
+     *
+     * 插件通过 `ctx.qdashNeo.tools.register()` 往这里写，内核在**每次建立会话**时挂载。
+     * 不在会话建立期直接注册，是因为插件根本拿不到会话级的 `tools` 对象 ——
+     * 会话由内核创建，插件只是"进程里的一个东西"。
+     */
+    this.pluginTools = new PluginToolRegistry({ log: this.log })
+    /** 给插件用的门面（`ctx.qdashNeo.tools`） */
+    this.tools = {
+      /** @param {object} desc 见 `PluginToolRegistry#register` */
+      register: desc => this.pluginTools.register(desc),
+      list: () => this.pluginTools.list(),
+      has: name => this.pluginTools.has(name),
+    }
+
+    /**
+     * 插件存储与运行时配置。
+     *
+     * 传 `getStore` 而不是直接给 store 对象：store 在 `start()` 里才创建，
+     * 而插件可能在构造之后、start 之前就调 `forFeature()` ——
+     * 直接传会拿到 null，然后在第一次用时炸掉，报错还指不到根因。
+     */
+    this.pluginStorage = new PluginStorage({ getStore: () => this.store, log: this.log })
+    this.pluginSettings = new PluginSettings({ getStore: () => this.store, log: this.log })
+    this.storage = {
+      /** @param {string} name 插件自己的名字（做格式校验，命名空间 `feature:<name>:`） */
+      forFeature: name => this.pluginStorage.forFeature(name),
+      /**
+       * 插件自己的目录。**不是授予权限**（插件本来就能用 `node:fs`），
+       * 而是给一个跟着 DSH_HOME 走、卸载时知道该清哪儿的约定路径。
+       * @param {string} name @param {string} [sub]
+       */
+      dir: (name, sub) => this.pluginStorage.dir(name, sub),
+    }
+    this.settings = {
+      /** @param {object} opts 见 `PluginSettings#register` */
+      register: opts => this.pluginSettings.register(opts),
+    }
     /** @type {{ userId?: string, nickname?: string }|null} 登录信息，用来拼"机器人的称呼" */
     this.login = null
     // withheld：tool 模式下「说了但没调发送工具」的次数 —— 用来核对
@@ -171,6 +216,7 @@ export class QdashNeoService {
     this.memory = new Memory({ store: this.store, config: this.config, log: this.log })
     // 人设放在插件层：judge 也要读它，放 DSH persona 里插件就看不见了
     this.persona = new Persona({ store: this.store, config: this.config, log: this.log })
+    this.voice = this.makeVoice(this.config)
     this.gates = new Gates(this.config)
     this.context = new GroupContext({
       limit: Number.isFinite(jc.contextLines) ? jc.contextLines : 20,
@@ -650,6 +696,8 @@ export class QdashNeoService {
         config: this.config,
         log: this.log,
         withGuard: this.config?.policy?.groupToolGuard !== false,
+        // 插件工具：在内核工具之后挂载，同名时内核优先
+        pluginTools: this.pluginTools,
         deps: {
           client: this.client,
           attachments,
@@ -660,8 +708,10 @@ export class QdashNeoService {
           // 管理类工具的身份校验：只有这些 QQ 号能授权踢人
           ownerIds: this.adminOwners(),
           senderId: () => this.lastSender.get(chatKey) ?? '',
+          voice: this.voice,
           enqueue: (key, text, meta) => this.enqueueOut(key, text, meta),
-          enqueueSegments: (key, segments, meta) => this.outbox?.enqueueSegments(key, segments, meta),
+          // 段消息也要落库：否则控制台与重启恢复都看不到"它发过语音/图片"
+          enqueueSegments: (key, segments, meta) => this.enqueueSegmentsOut(key, segments, meta),
         },
       })
     } catch (err) {
@@ -947,6 +997,28 @@ export class QdashNeoService {
     if (ev.kind === 'private') return true
     if (ev.atMe) return true
     return String(ev.messageId ?? '').startsWith('poke-')
+  }
+
+  /**
+   * 造一套语音组件（库 + TTS）。
+   *
+   * TTS 与语音库**共用目录**：合成缓存放语音库的 `.tts/` 子目录。
+   * 让两边各自推一遍目录规则迟早会漂移 —— 换个 `DSH_HOME` 就一个写对、一个写错。
+   *
+   * @param {object} config
+   * @returns {VoiceLibrary}
+   */
+  makeVoice(config) {
+    return new VoiceLibrary(config, {
+      log: this.log,
+      /**
+       * 注入发送出口，而不是让调用方各自传回调。
+       *
+       * 插件与内核工具共用这一条路：段消息落库（`[语音] xxx`）也在这里发生，
+       * 插件不需要知道出站队列长什么样。
+       */
+      deliver: (chatKey, segments, meta) => this.enqueueSegmentsOut(chatKey, segments, meta),
+    })
   }
 
   /** 清掉沉睡状态（内存 + kv），唤醒时用 */
@@ -1514,6 +1586,8 @@ export class QdashNeoService {
       proactive: ev.proactive ?? null,
       // 主动发言开着时才教它 `[[LATER:N]]`
       canSchedule: this.config?.proactive?.enabled === true,
+      // 语音可用时才提"可以用语音说"
+      canSpeak: this.voice?.enabled === true,
     })
 
     // 记一次「允许模型开口」：配额按开口次数算，不按分条后的消息条数（M2 会分条）。
@@ -1707,6 +1781,28 @@ export class QdashNeoService {
     this.outbox?.enqueue(chatKey, text, { ...meta, qqMsgId })
   }
 
+  /**
+   * 出站**消息段**的统一出口：落库 + 入队。
+   *
+   * 和 `enqueueOut` 只差载荷（段数组 vs 文本），落库与状态回写完全共用 ——
+   * 不落库的话控制台里这条语音/图片是一片空白，重启后也拼不出"我说过什么"。
+   *
+   * `qqMsgId` 特意用 `seg:` 前缀而**不是** `out:<ts>:<n>`：后者会被
+   * `mergeOutboundShards` 当成一次回复的分片去合并，语音就会和相邻文本粘成一条。
+   *
+   * @param {string} chatKey
+   * @param {object[]} segments
+   * @param {{ text?: string, fromTool?: string, replyId?: string, qqMsgId?: string }} [meta]
+   *   `text` 是**给人看的标签**（如 `[语音] 晚安`），写进 messages 与控制台
+   */
+  enqueueSegmentsOut(chatKey, segments, meta = {}) {
+    if (!Array.isArray(segments) || !segments.length) return
+    const qqMsgId = meta.qqMsgId ?? `seg:${Date.now()}:${++this.outSeq}`
+    const label = String(meta.text ?? '').trim() || '[非文本消息]'
+    this.safeInsert({ chatKey, qqMsgId, direction: 'out', text: label, state: 'queued' })
+    this.outbox?.enqueueSegments(chatKey, segments, { ...meta, qqMsgId, text: label })
+  }
+
   safeInsert(row) {
     try {
       return this.store.insertMessage(row)
@@ -1788,6 +1884,11 @@ export class QdashNeoService {
     this.syncBotNames()
     this.memoryOf()?.applyConfig(next)
     this.personaOf()?.applyConfig(next)
+    /**
+     * 语音库没有需要保留的运行态（只有内存里的发送时间戳，重建一次影响很小），
+     * 所以配置变了直接重建 —— 比写一个 applyConfig 更不容易漏字段。
+     */
+    this.voice = this.makeVoice(next)
 
     /**
      * 会话的模型绑定 / cwd。

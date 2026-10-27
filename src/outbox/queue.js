@@ -26,6 +26,14 @@ export class Outbox {
    */
   constructor({
     send,
+    /**
+     * 发消息段（图片 / 语音 / 表情）。
+     *
+     * 之前这里**漏了解构**，于是 `this.sendSegments` 永远是 undefined ——
+     * 所有段发送都会抛「出站队列不支持消息段」，重试三次后进死信。
+     * 表现是"图发出去了吗？没有"，而队列日志里只有一条 `不支持消息段`。
+     */
+    sendSegments = null,
     log,
     onSent,
     onDead,
@@ -35,6 +43,7 @@ export class Outbox {
     now = Date.now,
   }) {
     this.send = send
+    this.sendSegments = sendSegments
     this.log = log
     this.onSent = onSent
     this.onDead = onDead

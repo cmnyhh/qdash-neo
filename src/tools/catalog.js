@@ -137,6 +137,23 @@ export const QQ_TOOLS = [
     sideEffect: true,
   },
   {
+    name: 'qq_send_voice',
+    group: 'write',
+    action: 'send',
+    title: '发语音',
+    description: '往当前会话发一条语音库里的音频文件（默认只允许库内文件）。',
+    params: { name: '语音库里的文件名，如 hi.mp3' },
+    sideEffect: true,
+  },
+  {
+    name: 'qq_voice_list',
+    group: 'read',
+    action: 'list',
+    title: '语音库',
+    description: '列出语音库里可用的音频文件。',
+    params: {},
+  },
+  {
     name: 'qq_send_custom_face',
     group: 'write',
     action: 'send',

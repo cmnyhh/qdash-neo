@@ -1,0 +1,46 @@
+# 语音插件。形态见 docs/qdash-neo/04-插件开发规范.md §1.2：
+# 由 `package.json` 的 `dsh.bundle.patch` 指向，装进 profile 后由 DSH 展开。
+#
+# 注意 `insert:` 是必需的 —— 直接写 `- id: xxx` 是"按 id 修改已有条目"，
+# id 不存在时会被静默忽略（这个坑踩过一次，表现是"装了但没反应"）。
+- insert:
+    - id: qq-voice
+      name: 'qdash-neo-plugin-voice'
+      config:
+        tts:
+          # 默认关。配好下面的 endpoint 再改成 true。
+          enabled: false
+
+          # ── 三种协议选一种 ──────────────────────────────────────────
+          #
+          # 1) openai —— /v1/audio/speech 兼容（最常见，推荐）
+          #    protocol: 'openai'
+          #    endpoint: 'http://127.0.0.1:9880/v1/audio/speech'
+          #    apiKey: ''
+          #    model: 'tts-1'
+          #    voice: 'alloy'
+          #
+          # 2) gpt-sovits —— 原生 /tts 接口
+          #    protocol: 'gpt-sovits'
+          #    endpoint: 'http://127.0.0.1:9880/tts'
+          #    refAudioPath: '/opt/ref/voice.wav'   # 服务器上的绝对路径，必须真实存在
+          #    promptText: '参考音频里说的那句话'      # 要与音频内容一致，否则音色会飘
+          #    promptLang: 'zh'
+          #    textLang: 'zh'
+          #    speedFactor: 1
+          #
+          # 3) custom —— 形状奇怪的端点，自己填 body 模板
+          #    protocol: 'custom'
+          #    endpoint: 'http://127.0.0.1:8080/say'
+          #    bodyTemplate: '{"q":"{{text}}","spk":"a"}'
+          #
+          # ───────────────────────────────────────────────────────────
+
+          protocol: 'openai'
+          endpoint: ''
+
+          # 超时与限额
+          timeoutMs: 30000
+          maxChars: 200          # 单次合成最多多少字（合成慢、按量计费）
+          format: 'mp3'
+          cacheMaxFiles: 200     # 合成缓存上限，超出按最旧的删
