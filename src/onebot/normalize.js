@@ -94,6 +94,16 @@ export function normalizeEvent(raw, { selfId = '' } = {}) {
    */
   const imageSegment = segments.find(s => s && s.type === 'image')
   const imageFile = String(imageSegment?.data?.file ?? '').trim().slice(0, 120)
+  /**
+   * 图片的**下载地址**（OneBot 给的 `url`，可能是 http(s):// 或 base64://）。
+   *
+   * 插件要"收藏图片"必须有它：`imageFile` 只是 NapCat 的缓存标识，
+   * 要通过 `get_image` 才能转成内容，而插件拿不到 `client`。
+   *
+   * 只截 500 字：base64 内联的图会很长，但那个值本身没意义（插件也解析不了），
+   * 真需要内容时它应该传 `file` 让内核去取。
+   */
+  const imageUrl = String(imageSegment?.data?.url ?? '').trim().slice(0, 500)
   const groupId = raw.group_id == null ? null : String(raw.group_id)
   const senderName = String(raw.sender?.card || raw.sender?.nickname || '').trim()
   // raw.time 是秒；缺省用本地时间（上下文 TTL 与顺序都靠它，不能留空）
@@ -109,6 +119,7 @@ export function normalizeEvent(raw, { selfId = '' } = {}) {
     atMe,
     hasImage,
     imageFile,
+    imageUrl,
     senderName,
     ts,
     segments,
