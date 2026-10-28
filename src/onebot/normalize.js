@@ -144,6 +144,13 @@ export function normalizeEvent(raw, { selfId = '' } = {}) {
    * 真需要内容时它应该传 `file` 让内核去取。
    */
   const imageUrl = String(imageSegment?.data?.url ?? '').trim().slice(0, 500)
+  /**
+   * 图片段的 `data` 里有 `file` / `url` / `file_size` 等字段。
+   *
+   * 曾经加过一段临时诊断把原始 JSON 打出来，确认 `url` 在某些协议端/某些
+   * 图源下为空 —— 那段已经删了，别留在生产路径上刷日志。
+   * 缺失时的兜底在 `service.handleInbound` 里（`get_image` 补一次）。
+   */
   const groupId = raw.group_id == null ? null : String(raw.group_id)
   const senderName = String(raw.sender?.card || raw.sender?.nickname || '').trim()
   // raw.time 是秒；缺省用本地时间（上下文 TTL 与顺序都靠它，不能留空）
