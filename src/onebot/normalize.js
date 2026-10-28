@@ -517,7 +517,15 @@ export function renderPrompt(
      * 不在本批里的 ID 直接报错并列出可用的，而不是发一条引用到不存在消息上的消息。
      */
     const id = String(it.messageId ?? '').trim()
-    return id ? `[#${id}] ${who}${at}：${text}` : `${who}${at}：${text}`
+    /**
+     * **纯 @ 消息没有正文**（`segs=[at]`，`text` 为空）。
+     *
+     * 那种消息现在能通过 `ingest`（不再被当空消息丢掉），但如果照旧拼
+     * `：${text}`，就会得到 `甲(888)（@888，不是在叫你）：` 后面空着 ——
+     * 看着像被截断。没正文就把冒号一起去掉，`@` 标记本身已经说明了全部内容。
+     */
+    const head = id ? `[#${id}] ${who}${at}` : `${who}${at}`
+    return text ? `${head}：${text}` : head
   }
   /**
    * 标题要跟「有没有人叫它」走。

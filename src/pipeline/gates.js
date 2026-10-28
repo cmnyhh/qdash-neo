@@ -155,8 +155,20 @@ export class Gates {
       }
     }
 
-    // 纯图片先按"有内容"放行，交给上层决定要不要看图
-    if (!ev.text && !ev.hasImage) return { ok: false, reason: REASON.EMPTY }
+    /**
+     * **纯图片、纯 @ 都算"有内容"。**
+     *
+     * 早先这里只放行了图片，于是「只 @ 了某个人、一个字没说」的消息
+     * 被当成空消息丢掉 —— 而那条消息的语义很明确：**在叫别人，不是在叫它**。
+     *
+     * 丢掉它的后果是模型看不到这次 @：
+     *   - 「@黑色、影」单独发 → 整条消失
+     *   - 连带上一条的语境一起断掉，看起来像"有人莫名不说话"
+     */
+    const hasAt = Boolean(ev.atMe) || (Array.isArray(ev.atTargets) && ev.atTargets.length > 0)
+    if (!ev.text && !ev.hasImage && !hasAt) {
+      return { ok: false, reason: REASON.EMPTY }
+    }
 
     return { ok: true }
   }
