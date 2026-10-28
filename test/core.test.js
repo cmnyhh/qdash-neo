@@ -995,7 +995,7 @@ test('@ 别人时要标出「不是在叫你」', () => {
   assert.deepEqual(other.atTargets, ['888'], '要记下 @ 的是谁')
   assert.equal(other.atMe, false)
   const p1 = renderPrompt(other, { botName: '狐狐', batch: [other] })
-  assert.match(p1, /@别人，不是在叫你/, '这条必须让模型知道不是在叫它')
+  assert.match(p1, /@888，不是在叫你/, '要列出具体号码 —— 历史里每条都带号码，两下一对才知道是谁')
 
   // @ 我：不要出现"别人"字样，否则会削弱召唤感
   const me = normalizeEvent(
@@ -1008,7 +1008,7 @@ test('@ 别人时要标出「不是在叫你」', () => {
   assert.match(p2, /（@你）/)
   // 只能断言 `@别人` 这种组合，不能断言"别人"两个字 —— prompt 里本来就有
   // 「别人在说正事」那段判断维度
-  assert.doesNotMatch(p2, /@别人/, '@ 我时不该出现"@别人"')
+  assert.doesNotMatch(p2, /@\d+/, '@ 我时不该出现别人的号码')
 
   // 同时 @ 我和别人
   const both = normalizeEvent(
@@ -1021,7 +1021,7 @@ test('@ 别人时要标出「不是在叫你」', () => {
   )
   assert.equal(both.atMe, true)
   assert.deepEqual(both.atTargets, ['888'])
-  assert.match(renderPrompt(both, { botName: '狐狐', batch: [both] }), /@你，也在叫别人/)
+  assert.match(renderPrompt(both, { botName: '狐狐', batch: [both] }), /@你，也在叫 @888/)
 })
 
 test('renderPrompt 必须把 contextImageDesc 传给上下文渲染（二次渲染那条路径）', () => {

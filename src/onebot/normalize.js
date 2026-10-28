@@ -495,13 +495,15 @@ export function renderPrompt(
      *   @你，也@了别人    → （@你，也在叫别人）
      *   @了别人          → （@别人，不是在叫你）   ← 防止抢答
      */
-    const others = Array.isArray(it.atTargets) ? it.atTargets.length : 0
+    const others = Array.isArray(it.atTargets) ? it.atTargets : []
+    // 把 QQ 号直接列出来：历史里每条都带 `昵称(号码)`，两下一对就知道是谁
+    const atNames = others.map(q => `@${q}`).join(' ')
     const at = it.atMe
-      ? others
-        ? '（@你，也在叫别人）'
+      ? others.length
+        ? `（@你，也在叫 ${atNames}）`
         : '（@你）'
-      : others
-        ? '（@别人，不是在叫你）'
+      : others.length
+        ? `（${atNames}，不是在叫你）`
         : ''
     const text = String(it.text || (it.hasImage ? imageTag(it) : '')).replace(/\s*\n\s*/g, ' ⏎ ')
     /**
