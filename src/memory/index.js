@@ -208,7 +208,7 @@ export class Memory {
    *   两者一起保证同一句话不会在 prompt 里出现两次（时间切 + id 兜底）。
    *   `idle` = 此刻是不是没人说话，决定记忆的**姿态**（见下面的注释）。
    */
-  render(chatKey, { beforeTs = null, excludeIds = [], idle = false } = {}) {
+  render(chatKey, { beforeTs = null, excludeIds = [], idle = false, imageDesc = null } = {}) {
     if (!this.enabled || !this.inject) return ''
     const parts = []
     const total = this.maxChars
@@ -216,7 +216,7 @@ export class Memory {
     // 顺序即优先级：最近对话（最新鲜）→ 日总结（跨天）→ 三类社交笔记
     let budget = total
 
-    const recent = this.renderRecent(chatKey, { beforeTs, excludeIds, budget })
+    const recent = this.renderRecent(chatKey, { beforeTs, excludeIds, budget, imageDesc })
     if (recent) {
       parts.push(recent)
       budget -= recent.length
@@ -280,7 +280,7 @@ export class Memory {
    * 「最近对话」段：补上群聊记录窗口之外的原文（含自己说过的话）。
    * 从新往旧累加、超预算就停 —— 越新的话越可能被接上。
    */
-  renderRecent(chatKey, { beforeTs = null, excludeIds = [], budget = this.maxChars } = {}) {
+  renderRecent(chatKey, { beforeTs = null, excludeIds = [], budget = this.maxChars, imageDesc = null } = {}) {
     if (typeof this.store?.messagesBefore !== 'function') return ''
     let rows = []
     try {
@@ -313,7 +313,30 @@ export class Memory {
           `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ` +
           `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
         : ''
-      const line = `${who}${hhmm ? `(${hhmm})` : ''}：${String(r.text ?? '').replace(/\s*\n\s*/g, ' ')}`
+      /**
+       * **这里也要把 `[图片:id]` 换成描述。**
+       *
+       * 「群聊记录」那条路（`renderContextBlock`）早就换了，但这段漏了 ——
+       * 于是用户看到的「最近对话」里全是 `[图片]`，明明映射里已经有描述。
+       *
+       * 两段是拼起来用的，替换逻辑必须一致，否则同一张图在前一段有描述、
+       * 在后一段没有，模型会觉得那是两张不同的图。
+       */
+      const body = (() => {
+        const t = String(r.text ?? '').replace(/\s*\n\s*/g, ' ')
+        if (!t.includes('[图片')) return t
+        return t.replace(/\[图片:([^\]]+)\]/g, (_m, f) => {
+          let d = ''
+          try {
+            d = String(imageDesc?.(String(f).trim()) ?? '').trim()
+          } catch {
+            d = ''
+          }
+          // 和群聊记录一致：没描述就只留 `[图片]`，**不暴露 id**
+          return d ? `[${d}]` : '[图片]'
+        })
+      })()
+      const line = `${who}${hhmm ? `(${hhmm})` : ''}：${body}`
       if (chars + line.length + 1 > budget) break
       chars += line.length + 1
       picked.push(line)

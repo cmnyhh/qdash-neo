@@ -175,6 +175,14 @@ export function createQqTools({
    * @type {{ get: (k: string) => any, set: (k: string, v: any) => void }|null}
    */
   store = null,
+  /**
+   * 生成一句图片描述（`(attachment) => Promise<string>`）。
+   *
+   * 由内核注入：工具层不该知道模型怎么调，只负责"看图时顺手要一句"。
+   * 没注入时跳过 —— 描述是锦上添花，缺了不影响看图。
+   * @type {((attachment: object) => Promise<string>)|null}
+   */
+  describeImage = null,
   /** 能授权群管理操作的 QQ 号（Set 或数组）；由 `tools.adminOwners` 或私聊白名单推导 */
   ownerIds = null,
   /** 这次触发回复的消息发送者 QQ 号；`qq_kick` 用它做身份校验 */
@@ -284,11 +292,27 @@ export function createQqTools({
        *
        * 已经有描述就不再催：重复记一遍是浪费一轮。
        */
+      /**
+       * **把"记一句"写成流程的一部分，而不是"顺手"。**
+       *
+       * 我试过两种软措辞，模型都不调：
+       *
+       *   "看完顺手调 image_mark 记一句"          → 忽略
+       *   "不调也行，系统会自己记"                → 更不调
+       *
+       * 原因很实在：看完图它就去回复群友了，"记一句给以后的自己看"
+       * 对**当下**没有任何收益。**建议**对它不是命令。
+       *
+       * 所以改成：**说清不做的后果**，并把它排在"回复"之前（先记，再说话）。
+       * 这不是道德劝说，是给它一个具体的、会疼的代价。
+       */
       let hint = ''
       if (store && typeof store.get === 'function' && !store.get(`image:desc:${file}`)) {
         hint =
-          '看完顺手调 image_mark 记一句它是什么（表情包写含义、照片写画面），' +
-          '以后翻到这条就不用重新看图了。'
+          `**下一步先调 image_mark**（file="${file}"），用一句话写下这张图是什么 —— ` +
+          '表情包写含义、照片写画面。\n' +
+          '不记的话，以后翻到这条消息只有一个 [图片]，你会什么都不记得 —— ' +
+          '那条消息就白读了，等于这次看图没发生。'
       }
       return {
         ok: true,
@@ -334,7 +358,9 @@ export function createQqTools({
     'qq_get_image',
     '把一张 QQ 图片取回来看看。模型支持看图时会直接把图放进上下文；不支持时会返回说明。\n' +
       'file 传消息里 [图片:xxx] 的那个 xxx（或完整 URL）。**不知道是哪张就传 latest** —— ' +
-      '会取这个会话最近一张图。不要自己编 id，OneBot 会回 image not found in cache。',
+      '会取这个会话最近一张图。不要自己编 id，OneBot 会回 image not found in cache。\n' +
+      '**看完之后必须调 image_mark 记一句**：历史记录里不会再存图片本身' +
+      '（避免每次翻旧账都重读一遍图），所以你不记，下次就只有 [图片]，什么都不剩。',
     { file: '消息里 [图片:xxx] 的 xxx；不知道就传 latest' },
     async (args, exec) => {
       let file = String(args.file ?? '').trim()
@@ -367,8 +393,9 @@ export function createQqTools({
    */
   tool(
     'image_mark',
-    '记住这张图是什么，以后翻到就不用重新看图。**看完图顺手调一次**：' +
-      '表情包/梗图写含义（如"无语""笑死""摸鱼摆烂"），正经照片写画面（如"柴犬趴在键盘上打字"）。' +
+    '记住这张图是什么。**看过的图必须调一次** —— 历史记录不再保存图片本身，' +
+      '你不记，以后翻到就只剩 [图片]，等于白看。\n' +
+      '表情包/梗图写含义（"无语""笑死""摸鱼摆烂"），正经照片写画面（"柴犬趴在键盘上打字"）。' +
       '一句就够，不用长篇。',
     {
       file: '图片 id，就是消息里 [图片:xxx] 的那个 xxx（`qq_get_image` 用过的那个）',

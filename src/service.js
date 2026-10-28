@@ -17,6 +17,7 @@ import { JudgeChain } from './judge/chain.js'
 import { localDay, summarizeDay } from './memory/daily.js'
 import { Memory } from './memory/index.js'
 import { OneBotClient } from './onebot/client.js'
+import { describeImage } from './image/describe.js'
 import { imageTag, normalizeEvent, renderPrompt } from './onebot/normalize.js'
 import { ReplyLedger } from './outbox/ledger.js'
 import { Outbox } from './outbox/queue.js'
@@ -1263,6 +1264,17 @@ export class QdashNeoService {
             },
           },
           /**
+           * 生成一句图片描述（工具层在看图时调）。
+           *
+           * **不再指望模型自己调 `image_mark`** —— 实测它不调：
+           * 看完图它就去回复群友了，"记一句给以后的自己看"对当下没有收益，
+           * 提示词里写了、返回值里也催了，都没用。
+           *
+           * 改成内核自己调一次：用同一份附件（不重复下载），
+           * 一句话，失败就当没有。
+           */
+          describeImage: ref => this.describeImageOf(ref),
+          /**
            * 发分享卡片（`qq_send_card` 工具用）。
            *
            * 走的是这里而不是给工具一个 `client`：卡片要签名，而签名只有
@@ -2336,7 +2348,31 @@ export class QdashNeoService {
   }
 
   /**
-   * 查一张图的描述（`image_mark` 写、历史渲染读）。
+   * 独立调一次模型，给一张图写一句描述。
+   *
+   * 用 `judge` 的 provider/model（配了的话），否则跟随 `agent` ——
+   * 判定器本来就是"短调用"的定位，配置语义最接近。
+   *
+   * **必须是独立调用**：走会话的话，那句描述会变成给群友的回复。
+   *
+   * @param {object} attachment `attachments.saveImage()` 的返回值
+   * @returns {Promise<string>} 空串 = 生成失败（调用方不要写映射）
+   */
+  async describeImageOf(attachment) {
+    const cfg = this.config ?? {}
+    const provider = cfg.judge?.provider || cfg.agent?.provider || ''
+    const model = cfg.judge?.model || cfg.agent?.model || ''
+    return describeImage({
+      llm: this.ctx?.llm,
+      attachment,
+      provider,
+      model,
+      log: this.log,
+    })
+  }
+
+  /**
+   * 查一张图的描述（`image_mark` / `describeImageOf` 写、历史渲染读）。
    *
    * 没描述就返回空串 —— 调用方据此降级成 `[图片]`。
    * 任何异常都吞掉：**渲染路径不能因为查不到描述而失败**。
@@ -2470,6 +2506,14 @@ export class QdashNeoService {
         excludeIds: [...ctxLines.lines.map(l => l.messageId).filter(Boolean), ev.messageId],
         // 主动发言时没人说话 → 记忆是"可以提的话头"；有消息时它只是背景
         idle: !!ev.proactive,
+        /**
+         * 「最近对话」段里的 `[图片:id]` 也要换成描述。
+         *
+         * 这段和「群聊记录」是拼起来用的，替换逻辑必须一致 ——
+         * 否则同一张图在前一段有描述、后一段只有 `[图片]`，
+         * 模型会以为那是两张不同的图。
+         */
+        imageDesc: f => this.imageDescOf(f),
       }) ?? ''
     /**
      * 记忆注入的**可见证据**。
