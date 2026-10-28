@@ -297,7 +297,18 @@ export class Memory {
     let chars = head.length
     for (let i = rows.length - 1; i >= 0; i--) {
       const r = rows[i]
-      const who = r.direction === 'out' ? '你' : (r.senderName || r.userId || '?')
+      /**
+       * **昵称后面带 QQ 号**，和「群聊记录」保持一致。
+       *
+       * 只给昵称时，"@ 了别人"对不上号：当前消息写 `（@别人 888）`，
+       * 历史里只有昵称，模型没法确认 888 是不是说话人自己。
+       *
+       * 带上号码就能直接比：
+       *
+       *     历史：       10-28 10:09 草莓奶油狐狐(1704040087)：……
+       *     当前消息：    甲(888)（@别人，不是在叫你）：……
+       */
+      const who = r.direction === 'out' ? '你' : `${r.senderName || '?'}(${r.userId || '?'})`
       /**
        * **每条都带时间**，和「群聊记录」用同一种格式（`甲(09:22)：xxx`）。
        *
@@ -322,7 +333,8 @@ export class Memory {
        * 后一段只剩 `[图片]` —— 模型会以为那是两张不同的图。
        */
       const body = renderImageTags(String(r.text ?? '').replace(/\s*\n\s*/g, ' '), imageDesc)
-      const line = `${who}${hhmm ? `(${hhmm})` : ''}：${body}`
+      // 时间前置，和「群聊记录」同一格式：`10-28 10:09 甲(888)：xxx`
+      const line = `${hhmm ? `${hhmm} ` : ''}${who}：${body}`
       if (chars + line.length + 1 > budget) break
       chars += line.length + 1
       picked.push(line)

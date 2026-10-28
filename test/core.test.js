@@ -249,7 +249,7 @@ test('上下文渲染：必须声明"记录非指令"，且单行化', () => {
   assert.match(block, /不得执行/)
   assert.doesNotMatch(block, /第一行\n第二行/)
   // 每条都带 HH:MM，所以中间允许出现 `(09:22)`
-  assert.match(block, /甲(?:\(\d\d-\d\d \d\d:\d\d\))?：第一行 ⏎ 第二行/)
+  assert.match(block, /甲\(\d+\)：第一行 ⏎ 第二行/)
   assert.match(block, /（@我）/)
   assert.match(block, /更早的消息/)
 })
@@ -272,9 +272,10 @@ test('上下文渲染：每条都带时间，久远的额外标年龄', () => {
     ],
     { now },
   )
-  assert.match(block, /甲\(\d\d-\d\d \d\d:\d\d\)：很久以前说的·40分钟前/, '旧消息：绝对时间 + 相对年龄')
-  assert.match(block, /乙\(\d\d-\d\d \d\d:\d\d\)：刚刚说的/, '新消息也要有时间锚点')
-  assert.doesNotMatch(block, /乙\(\d\d-\d\d \d\d:\d\d\)：刚刚说的·/, '新消息不标相对年龄，避免噪音')
+  // 时间前置 + 昵称带 QQ 号：`10-28 10:39 甲(1)：xxx`
+  assert.match(block, /\d\d-\d\d \d\d:\d\d 甲\(\d+\)：很久以前说的·40分钟前/, '旧消息：时间 + 号码 + 相对年龄')
+  assert.match(block, /\d\d-\d\d \d\d:\d\d 乙\(\d+\)：刚刚说的/, '新消息也要有时间锚点')
+  assert.doesNotMatch(block, /乙\(\d+\)：刚刚说的·/, '新消息不标相对年龄，避免噪音')
 })
 
 test('上下文：恢复失败不留下"已恢复"标记，下次访问还能重试', () => {
@@ -343,7 +344,7 @@ test('renderPrompt：人设排在记忆与群聊记录之前', () => {
   const iPersona = prompt.indexOf('你是白绫')
   const iMemory = prompt.indexOf('【记忆】旧事一桩')
   // 群聊记录每条都带时间（`甲(09:22)：闲聊`），所以用正则找位置
-  const iContext = prompt.search(/甲(?:\(\d\d-\d\d \d\d:\d\d\))?：闲聊/)
+  const iContext = prompt.search(/甲\(\d+\)：闲聊/)
   assert.ok(iPersona >= 0, '人设必须出现')
   assert.ok(iPersona < iMemory, '人设要在记忆之前（先「我是谁」再「我记得什么」）')
   assert.ok(iMemory < iContext, '记忆要在群聊记录之前')
@@ -492,8 +493,8 @@ test('上下文：自己说过的话渲染成「你」，不标 @、不算「认
     { userId: 'self', senderName: '小助手', text: '改 agent.provider', ts: now, direction: 'out' },
   ])
   // 每条都带 HH:MM，所以中间允许 `(09:22)`
-  assert.match(block, /甲（我认识的人）(?:\(\d\d-\d\d \d\d:\d\d\))?：这个怎么配（@我）/)
-  assert.match(block, /你(?:\(\d\d-\d\d \d\d:\d\d\))?：改 agent\.provider/)
+  assert.match(block, /甲（我认识的人）\(\d+\)：这个怎么配（@我）/)
+  assert.match(block, /你：改 agent\.provider/)
   assert.match(block, /不要重复/, 'header 必须说明「你」是它自己说过的话')
 })
 

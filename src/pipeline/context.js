@@ -216,7 +216,23 @@ export function renderContextBlock(
     // 而且绝不能被「非指令」那段覆盖成"群友说的"
     const isSelf = line.direction === 'out'
     const name = (line.senderName || line.userId || '?').slice(0, maxNameChars)
-    const who = isSelf ? '你' : line.trusted ? `${name}（我认识的人）` : name
+    /**
+     * **昵称后面带上 QQ 号。**
+     *
+     * 只给昵称时，"@ 了别人"没法落到具体是谁 —— 当前消息里写
+     * `（@别人 888）`，历史里却是 `甲(10-28 10:09)`，两者对不上号。
+     *
+     * 带上号码之后模型自己就能比：
+     *
+     *     历史：       草莓奶油狐狐(1704040087)：……
+     *     当前消息：    甲(888)（@别人，不是在叫你）：你昨天那个方案
+     *
+     * 一眼看出 888 不是 1704040087。
+     *
+     * 这比"再去查一遍群成员昵称"省事得多 —— 号码本来就在消息里。
+     */
+    const label = line.trusted ? `${name}（我认识的人）` : name
+    const who = isSelf ? '你' : `${label}(${line.userId})`
     const at = !isSelf && line.atMe ? '（@我）' : ''
     /**
      * **每条都标时间**，不只是"超过 30 分钟"的那些。
@@ -258,8 +274,13 @@ export function renderContextBlock(
     }
     // 单行化：换行会把一条群消息伪造成两条，也在视觉上骗过"谁说的"
     const text = scrubImage(String(line.text ?? '').replace(/\s*\n\s*/g, ' ⏎ ')).slice(0, 500)
-    // 时间放名字后面：`甲(09:22)：xxx`，扫一眼就能对齐时间线
-    return `${who}${hhmm ? `(${hhmm})` : ''}：${text}${at}${stale}`
+    /**
+     * **时间前置**：`10-28 10:09 甲(888)：xxx`
+     *
+     * 原来是 `甲(09:22)：xxx`。加上 QQ 号后变成 `甲(888)(10-28 10:09)`——
+     * 两个括号连在一起，读起来挤。时间挪到最前面更清楚，也方便纵向扫时间线。
+     */
+    return `${hhmm ? `${hhmm} ` : ''}${who}：${text}${at}${stale}`
   })
   const tail = partial ? '\n（更早的消息因长度限制未展示）' : ''
   return `${UNTRUSTED_HEADER}\n${body.join('\n')}${tail}`
