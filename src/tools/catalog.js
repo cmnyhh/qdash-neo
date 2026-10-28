@@ -172,7 +172,36 @@ export const QQ_TOOLS = [
       title: '标题',
       desc: '可选：一句话描述',
       cover: '可选：封面图地址',
-      kind: '卡片类型：bili（默认）或 weibo',
+      kind: '卡片类型：news（默认，通用图文卡片，点开跳链接）或 bili（需内测权限，不要用）',
+    },
+    sideEffect: true,
+  },
+  /**
+   * **`memory_add` 一直漏在目录外。**
+   *
+   * `tools/index.js` 里注册了它（还只在 `memory.enabled=true` 时才注册），
+   * 但这里没有 → `applyToolPolicy` 算不出白名单 → guard 拒绝：
+   *
+   *     Error: 工具不在白名单：memory_add（在控制台「工具」里勾选后可用）
+   *
+   * 而控制台里**根本没有这一项可勾**，因为白名单是从这份目录算的。
+   * 表现就是"记忆功能开了、引导也给了，但模型一调就报没授权"。
+   *
+   * 和 `qq_send_card` 一模一样的坑：**注册 ≠ 登记**。
+   */
+  {
+    name: 'memory_add',
+    group: 'write',
+    action: 'add',
+    title: '记记忆',
+    description:
+      '把值得长期记住的事记下来。三类：topic（正在聊什么）/' +
+      'impression（对某个群友的印象，需要 target）/ thought（想说但没说的话）。' +
+      '只记稳定的、以后还用得上的事，不要记流水账。',
+    params: {
+      kind: 'topic / impression / thought',
+      text: '要记的内容（一句话，40 字以内最好）',
+      target: '仅 impression 需要：这个群友的昵称',
     },
     sideEffect: true,
   },

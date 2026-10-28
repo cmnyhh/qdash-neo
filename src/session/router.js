@@ -79,7 +79,19 @@ export class SessionRouter {
    * @returns {string[]} 实际删掉的目录
    */
   static removeStoredSession(sessionId, { log = () => {} } = {}) {
-    const root = join(homedir(), '.dsh', 'sessions')
+    /**
+     * **必须优先用 `DSH_HOME`，不能只看 `homedir()`。**
+     *
+     * 线上 `DSH_HOME=/opt/dsh-home-official`，而会话实际落在
+     * `/opt/dsh-home-official/sessions/...`。早先这里写死
+     * `homedir()/.dsh/sessions`，于是每次"删会话"都在删一个**不存在的目录**，
+     * `removed.length` 恒为 0 —— 而调用方看到"成功"，以为重建了。
+     *
+     * 后果很严重：`chats` 表里的记录删了，磁盘上的 agent 历史还在，
+     * 下次 `createOrResume` 又把那几百轮历史 resume 回来 ——
+     * 上下文一路涨到 `prompt is too long: 1061352 tokens`。
+     */
+    const root = join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'sessions')
     const encoded = SessionRouter.encodeSessionId(sessionId)
     const removed = []
     let cwdDirs

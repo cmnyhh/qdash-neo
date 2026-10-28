@@ -179,6 +179,23 @@ export class QdashNeoService {
     this.proactiveRecent = new Map()
     /** 主动评估计数：chatKey → { day, n }，用于每日上限（内存级即可） */
     this.proactiveUsed = new Map()
+    /**
+     * 每个会话已经投递了多少轮：chatKey → 次数。
+     *
+     * **agent 会话历史会无限增长**，而 DSH 没有压缩机制 —— 群聊跑一天就能涨到
+     * `prompt is too long: 1061352 tokens > 1048576 maximum`，之后那个群
+     * 每一轮都失败。到阈值就重建会话，把历史清零。
+     *
+     * 重建不丢上下文：群聊记录（`context`）是从数据库现拼的。
+     */
+    this.turnCount = new Map()
+    /**
+     * 多少轮重建一次会话。
+     *
+     * 80 轮 × 每轮几千 token ≈ 几十万，离 104 万上限还有余量；
+     * 太大（比如 300）会撞墙，太小则频繁丢历史、模型反复"自我介绍"。
+     */
+    this.maxTurnsPerSession = 80
     /** 沉睡时长范围（**秒**），由配置决定，用于夹住模型给的数值 */
     /**
      * 沉睡范围（秒）。**和 `config.js` 里 `sleep.minSeconds/maxSeconds` 的默认值一致**。
@@ -377,7 +394,17 @@ export class QdashNeoService {
        *           cover?: string, url?: string }} opts
        * @returns {Promise<{ ok: boolean, mode: 'card'|'text' }>}
        */
-      share: async ({ chatKey, kind = 'bili', title = '', desc = '', cover = '', url = '' } = {}) => {
+      /**
+       * **`kind` 默认用 `news`，不用 `bili`。**
+       *
+       * `bili` 生成的是 **B 站小程序 ark** —— 它指向 B 站那个小程序，
+       * 而 QQ 侧需要内测权限才能打开，普通账号点开就是「应用内测中」。
+       * 卡片能看见、能显示封面标题，**就是点不动**。
+       *
+       * `news` 是 `com.tencent.structmsg` 的**通用图文卡片**：点开直接跳
+       * `jumpUrl`，不经过任何小程序。样式朴素一点，但**能点**比好看重要。
+       */
+      share: async ({ chatKey, kind = 'news', title = '', desc = '', cover = '', url = '' } = {}) => {
         const key = String(chatKey ?? '').trim()
         if (!key) throw new Error('card.share 需要 chatKey')
 
@@ -1348,6 +1375,44 @@ export class QdashNeoService {
      */
     this.pluginEvents.emit('message/inbound', ev)
 
+    /**
+     * 入站诊断：**@ 到底认出来没有、批窗口给了多久**。
+     *
+     * 排查过两个"看不出原因"的现象：
+     *   - @ 了却不回（如果 `atMe` 算错，prompt 里就没有「（@你）」，模型不知道在叫它）
+     *   - 批窗口看着不滑动（`hardDue` 被 @ 固定后，后续消息不再推后）
+     *
+     * 用 console.log 而不是 this.log：info 级在 DSH 里看不到。
+     */
+    if (ev.kind === 'group') {
+      const b = this.batches.get(ev.chatKey)
+      /**
+       * 把 **段类型** 也打出来。
+       *
+       * 只打 `atMe=false` 分不清两种情况：
+       *   - 消息里真的没有 @ 段
+       *   - 有 @ 段，但 `data.qq` 和 `self` 对不上（不同 OneBot 实现的字段名不同：
+       *     有的给 `data.qq`，有的给 `data.user_id`）
+       *
+       * `segs=[text,at,image]` 一眼就能看出来。
+       */
+      const segs = Array.isArray(ev.segments)
+        ? ev.segments.map(s => String(s?.type ?? '?')).join(',')
+        : '[]'
+      const atQq = Array.isArray(ev.segments)
+        ? ev.segments
+            .filter(s => s?.type === 'at')
+            .map(s => String(s?.data?.qq ?? s?.data?.user_id ?? '?'))
+            .join('/')
+        : ''
+      console.log(
+        `qdash-neo: 入站 ${ev.chatKey} msg=${ev.messageId} atMe=${ev.atMe} ` +
+          `segs=[${segs}]${atQq ? ` at=${atQq}` : ''} ` +
+          `text="${String(ev.text ?? '').slice(0, 24)}" ` +
+          `批=${b ? b.evs.length + 1 : 1}条${b ? `（已攒 ${b.evs.length}，firstAt 距今 ${Math.round((Date.now() - b.firstAt) / 1000)}s，hardDue=${b.hardDue ? '有' : '无'}）` : ''}`,
+      )
+    }
+
     if (ev.kind === 'group') {
       const next = this.prepareGroupInbound(ev)
       if (next === 'reply') {
@@ -1589,7 +1654,35 @@ export class QdashNeoService {
     if (!ev) return false
     if (ev.kind === 'private') return true
     if (ev.atMe) return true
-    return String(ev.messageId ?? '').startsWith('poke-')
+    if (String(ev.messageId ?? '').startsWith('poke-')) return true
+
+    /**
+     * **叫名字（人格别名）也算点名。**
+     *
+     * `judge/heuristics.js` 里早就写了这两条（@ → 必回、提到名字 → 必回），
+     * 但那个模块只在 `groupTrigger=judge` 时跑 —— `agent` 档下别名和关键词
+     * **完全无效**，表现就是"叫它名字它不理"。
+     *
+     * 提到这里之后一次盘活三条链路：
+     *   - `sleepGate`：点名 → 强制唤醒（原来只有 @ 和拍一拍能唤醒）
+     *   - `deferToAgent`：点名 → 不给 `[[SILENT]]`（必须开口）
+     *   - `sleep`：点名 → 不给 `[[SLEEP]]`（不能装睡）
+     */
+    if (this.gates?.named?.(ev.text)) return true
+
+    /**
+     * 启发式关键词。
+     *
+     * 判定层里它只是"降门槛"（`unsure`，不等于必回）；但用户明确要求
+     * **命中关键词就要开口** —— 这些词是他自己配的"该说话的话题"。
+     */
+    const kws = this.config?.policy?.groupTriggerKeywords
+    if (Array.isArray(kws) && kws.length) {
+      const t = String(ev.text ?? '')
+      if (t && kws.some(k => String(k ?? '').trim() && t.includes(String(k).trim()))) return true
+    }
+
+    return false
   }
 
   /**
@@ -2272,7 +2365,17 @@ export class QdashNeoService {
        *   - 判定层 defer：判定犹豫，把决定权交回来
        * 两种情况都必须给模型一个表达沉默的方式，否则它只能被迫回一句。
        */
-      deferToAgent: this.gates.groupTrigger === 'agent' || judgement?.verdict === 'defer',
+      /**
+       * **被点名时必须开口。**
+       *
+       * `deferToAgent` 为真才会给 `[[SILENT]]` 这个出口。所以点名时把它关掉：
+       * @ / 叫名字 / 命中关键词 → 没有"沉默"这个选项，只能说话。
+       *
+       * 否则会出现"@ 了它，它输出 `[[SILENT]]`" —— 技术上没错（它有权不说），
+       * 但用户的感觉就是"叫不应"。
+       */
+      deferToAgent:
+        (this.gates.groupTrigger === 'agent' || judgement?.verdict === 'defer') && !this.isSummon(ev),
       /**
        * 随机沉睡：把范围告诉模型，由它自己决定睡多久（null = 不给这个选项）。
        *
@@ -2289,7 +2392,18 @@ export class QdashNeoService {
        * 主动唤起时它仍然有 `[[SILENT]]` 可用（见 `deferToAgent`），
        * 那才是"这轮没什么可说的"的正确表达。
        */
-      sleep: this.sleepEnabled && !ev.proactive ? { min: this.sleepMin, max: this.sleepMax } : null,
+      /**
+       * 被点名时**也不给"睡"这个选项** —— 它已经被叫到了，装睡比不说话更失礼。
+       *
+       * 三条一起看：
+       *   - `!ev.proactive`：主动唤起时不给（它不在对话里）
+       *   - `!this.isSummon(ev)`：@ / 叫名字 / 命中关键词时不给
+       *   - 两者都不满足才正常给
+       */
+      sleep:
+        this.sleepEnabled && !ev.proactive && !this.isSummon(ev)
+          ? { min: this.sleepMin, max: this.sleepMax }
+          : null,
 
       /**
        * 用户的「系统要求」直接拼进 prompt。
@@ -2327,20 +2441,105 @@ export class QdashNeoService {
     // 宁可配额紧一点，也不要在发送链路里再做一层计数（那条路没有串行保证）。
     if (isGroup) this.gates.recordReply(chatKey)
 
+    /**
+     * **会话历史会无限累积，必须能自愈。**
+     *
+     * 实测事故：群聊跑一天后，DSH 的 agent 会话涨到
+     * `prompt is too long: 1061352 tokens > 1048576 maximum` ——
+     * 之后这个群**每一轮都失败**，因为它连"把话发出去"都做不到。
+     *
+     * 根因是 agent 会把每轮 prompt 追加进自己的历史，而 **DSH 没有压缩机制**。
+     * 我们能做的只有"到点重建会话"：
+     *
+     *   - **兜底**（这里）：撞上 too long 就删掉会话目录、重试一次
+     *   - **预防**（`maxTurnsPerSession`）：每 N 轮主动重建，不等到撞墙
+     *
+     * 重建的代价很小：群聊上下文（`context`）是**从数据库现拼的**，
+     * 不在 agent 历史里 —— 重建后照样能看到前面聊了什么。
+     */
     try {
       await this.router.deliver(chatKey, prompt)
+
+      // 轮数计数：到阈值就重建，别等它涨爆
+      const turns = (this.turnCount.get(chatKey) ?? 0) + 1
+      this.turnCount.set(chatKey, turns)
+      if (turns >= this.maxTurnsPerSession) {
+        this.turnCount.set(chatKey, 0)
+        this.rebuildSession(chatKey, `已 ${turns} 轮，主动重建`)
+      }
+
       const extra = judgement
         ? ` 判定=${judgement.layer}/${Number.isFinite(judgement.score) ? judgement.score.toFixed(2) : '?'}`
         : ''
       this.log('info', `qdash-neo: 已投递 ${chatKey} msg=${ev.messageId}${extra}`)
     } catch (err) {
       this.stats.errors += 1
+      const msg = String(err?.message ?? '')
+
+      /**
+       * **撞上上下文超限：删会话、重试一次。**
+       *
+       * 错误长这样：
+       *
+       *     prompt is too long: 1061352 tokens > 1048576 maximum
+       *
+       * 一旦发生，这个群**每一轮都会失败** —— 它连"把话发出去"都做不到，
+       * 用户看到的就是"机器人死了"，而且日志里只有一行 400。
+       *
+       * 重建后历史清空、上下文靠数据库重拼，所以不该再撞同一堵墙；
+       * 只重试一次，避免"重建也救不回来"时无限循环。
+       */
+      if (/prompt is too long|tokens?\s*>\s*\d+\s*maximum/i.test(msg)) {
+        this.log('warn', `qdash-neo: ${chatKey} 会话历史超限，重建后重试一次`)
+        this.rebuildSession(chatKey, '上下文超限')
+        try {
+          await this.router.deliver(chatKey, prompt)
+          this.turnCount.set(chatKey, 1)
+          this.log('info', `qdash-neo: ${chatKey} 重建后投递成功`)
+          return
+        } catch (err2) {
+          this.log(
+            'error',
+            `qdash-neo: 重建后仍失败 ${chatKey} msg=${err2?.message}`,
+          )
+          throw err2
+        }
+      }
+
       this.log(
         'error',
         `qdash-neo: 投递失败 ${chatKey} msg=${ev.messageId} name=${err?.name} code=${err?.code} msg=${err?.message}`,
         err,
       )
       throw err
+    }
+  }
+
+  /**
+   * 丢掉这个会话的 agent 历史，下次投递重新建一个。
+   *
+   * 两处需要它：
+   *   - **兜底**：投递时报上下文超限
+   *   - **预防**：轮数到 `maxTurnsPerSession`
+   *
+   * **不会丢群聊上下文**：`context` 是从数据库按 chatKey 现拼的，
+   * 和 agent 历史是两回事。重建后它照样知道前面聊了什么。
+   *
+   * @param {string} chatKey
+   * @param {string} why 日志里写明原因
+   */
+  rebuildSession(chatKey, why = '') {
+    try {
+      const sessionId = SessionRouter.sessionIdOf(chatKey)
+      // 先放掉内存里的 handle，再删磁盘目录：只删磁盘的话，内存里那份还在用
+      Promise.resolve(this.router?.release?.(chatKey)).catch(() => {})
+      const removed = SessionRouter.removeStoredSession(sessionId, { log: this.log })
+      this.log(
+        'warn',
+        `qdash-neo: ${chatKey} 重建会话（${why || '手动'}）删除了 ${removed.length} 个目录`,
+      )
+    } catch (err) {
+      this.log('warn', `qdash-neo: ${chatKey} 重建会话失败 msg=${err?.message}`)
     }
   }
 

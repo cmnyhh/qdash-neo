@@ -537,7 +537,9 @@ export function createQqTools({
         '别一张卡片再配一条裸链接 —— 群里会变成一条能点、一条不能点。' +
         '要分享几个就发几张卡片。',
       {
-        kind: '卡片类型：bili（B 站视频）或 weibo',
+        kind:
+          '卡片类型：news（默认，通用图文卡片，点开跳链接）' +
+          '或 bili（B 站小程序卡片 —— 需要 QQ 内测权限，普通账号点开提示「应用内测中」，别用）',
         title: '标题',
         desc: '可选：一句话描述，显示在标题下面',
         cover: '可选：封面图地址',
@@ -548,7 +550,7 @@ export function createQqTools({
         if (!url) throw new Error('url 不能为空（卡片点开总得有地方去）')
         return card.share({
           chatKey,
-          kind: String(args?.kind ?? 'bili').trim() || 'bili',
+          kind: String(args?.kind ?? 'news').trim() || 'news',
           title: String(args?.title ?? '').trim(),
           desc: String(args?.desc ?? '').trim(),
           cover: String(args?.cover ?? '').trim(),
