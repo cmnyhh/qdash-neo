@@ -221,7 +221,8 @@ export class QdashNeoService {
      * 按轮数判断等于"消息短就撑着、消息长就撞墙"，
      * 而**按累计字符**能保证每一轮的输入都在可控范围。
      */
-    this.historyChars = new Map()
+    // `historyChars` 已删除：它和会话真实大小脱节（内存 Map、重启清零、
+    // 算字符不算 token）。现在直接用 `usage.inputTokens`，见 `onUsage`。
     /**
      * 待重建的会话：chatKey → 原因。
      *
@@ -238,7 +239,14 @@ export class QdashNeoService {
      * 按每轮 4700 字算，约 **27 轮**一重建 —— 比固定 80 轮更早，
      * 但**不会出现"第 80 轮输入 37 万字"那种卡顿**。
      */
-    this.maxHistoryChars = 130_000
+    /**
+     * 上下文超过多少 **token** 就重建会话。
+     *
+     * 按 token 而不是字符：`usage.inputTokens` 是模型每轮真实回报的输入量，
+     * 而"字符数"要靠我们自己累加 —— 那个影子副本重启就清零，
+     * 和会话实际状态永远对不上。
+     */
+    this.maxHistoryTokens = 130_000
     /**
      * 轮数兜底：极端情况下（每轮极短）字符数涨得慢，但轮数太多也会
      * 让 DSH 自己的会话元数据膨胀，所以仍留一个硬上限。
@@ -3079,35 +3087,23 @@ export class QdashNeoService {
       await this.router.deliver(chatKey, prompt)
 
       /**
-       * **按累计字符判断，不按轮数。**
+       * **上下文大小由 `onUsage` 判断，这里只管轮数兜底。**
        *
-       * 轮数掩盖了真正的问题：第 80 轮的输入是前 79 轮的总和，
-       * 按"80 轮"判断会先经历一段越来越慢的区间。按字符则平滑得多 ——
-       * 消息密就早点重建，消息稀就晚点，**每轮输入始终可控**。
+       * 早先在这里累加 `prompt.length` 当"历史大小"，那是个和真实状态脱节的
+       * 影子副本：内存 Map、重启清零、算的是字符不是 token。
+       * 现在 token 那一路走 `usage.inputTokens`（见 `onUsage`）。
+       *
+       * 轮数保留作兜底：token 数偶尔可能拿不到（provider 不回报 usage），
+       * 那时至少还能按轮数止损。
+       *
+       * **只打标记，不在这里清。** `deliver` 返回 ≠ 回复完成 —— 回复是通过
+       * `attachSessionEvents` 的 `onReply` 异步回来的，这时候删会话等于在它
+       * 写回复的中途把会话掀了。真正的清理在**下一轮投递之前**（`deliver` 开头）。
        */
-      const used = (this.historyChars.get(chatKey) ?? 0) + prompt.length
-      this.historyChars.set(chatKey, used)
-
       const turns = (this.turnCount.get(chatKey) ?? 0) + 1
       this.turnCount.set(chatKey, turns)
-
-      /**
-       * **只打标记，不在这里清。**
-       *
-       * `deliver` 返回 ≠ 回复完成 —— 回复是通过 `attachSessionEvents` 的
-       * `onReply` 异步回来的。这时候 `release` + 删目录，等于在它写回复的
-       * 中途把会话掀了，轻则这一条发不出去，重则整个 handle 处于半死状态。
-       *
-       * 所以只记下"该清了"，真正的清理放在**下一轮投递之前**
-       * （见 `deliver` 开头），那时上一轮肯定已经结束。
-       */
-      if (used >= this.maxHistoryChars) {
-        this.pendingRebuild.set(chatKey, `历史累计 ${Math.round(used / 1000)}k 字`)
-        this.historyChars.set(chatKey, 0)
-        this.turnCount.set(chatKey, 0)
-      } else if (turns >= this.maxTurnsPerSession) {
+      if (turns >= this.maxTurnsPerSession) {
         this.pendingRebuild.set(chatKey, `已 ${turns} 轮（轮数兜底）`)
-        this.historyChars.set(chatKey, 0)
         this.turnCount.set(chatKey, 0)
       }
 
@@ -3137,9 +3133,8 @@ export class QdashNeoService {
         await this.rebuildSession(chatKey, '上下文超限')
         try {
           await this.router.deliver(chatKey, prompt)
-          // 重建后从头计：只算这一轮的体积
+          // 重建后从头计轮数；token 那一路由下一轮 `onUsage` 重新回报
           this.turnCount.set(chatKey, 1)
-          this.historyChars.set(chatKey, prompt.length)
           this.log('info', `qdash-neo: ${chatKey} 重建后投递成功`)
           return
         } catch (err2) {
@@ -3379,6 +3374,29 @@ export class QdashNeoService {
     } catch (err) {
       this.log('error', `qdash-neo: 回答 usage 落库失败 ${chatKey} name=${err?.name} msg=${err?.message}`, err)
     }
+
+    /**
+     * **用模型报回来的 `inputTokens` 判断重建，不自己累加字符。**
+     *
+     * 原来在 `deliver` 里维护 `historyChars` 累加：每轮把 `prompt.length` 加上去。
+     * 那是个**和会话实际状态脱节的影子副本**：
+     *
+     *   - 它是内存 Map，**重启清零** —— 而 DSH 的会话历史一点没少
+     *   - 累加的是"我们发出去的字符"，不是"模型实际吃进的 token"
+     *   - 想让它可靠就得自己持久化，等于把同一份事实存两遍
+     *
+     * `inputTokens` 是模型每次真实回报的**本轮全部输入**（历史 + 上下文 + 人设），
+     * 由 DSH 维护，重启也在。**读它就行，不用猜。**
+     *
+     * 时机也对：`onUsage` 是回复之后异步回来的，正好赶在**下一轮投递前**
+     * 打上 `pendingRebuild` 标记 —— 那时上一轮肯定结束了。
+     */
+    const input = Number(usage?.inputTokens ?? 0)
+    if (input > 0 && input >= this.maxHistoryTokens) {
+      this.pendingRebuild.set(chatKey, `上下文 ${Math.round(input / 1000)}k tokens`)
+      this.turnCount.set(chatKey, 0)
+      this.log('warn', `qdash-neo: ${chatKey} 上下文已达 ${input} tokens，下一轮前重建`)
+    }
   }
 
   /** 状态更新失败同样不该影响发送 */
@@ -3486,8 +3504,12 @@ export class QdashNeoService {
      * 改小 → 重建更频繁，每轮输入更轻、响应更快，但"记得"的轮次更少；
      * 改大 → 记得更久，但每轮输入更重（第 N 轮的输入 = 前 N-1 轮之和）。
      */
-    const hist = Number(next.agent?.maxHistoryChars)
-    this.maxHistoryChars = Number.isFinite(hist) && hist > 0 ? Math.round(hist) : 130_000
+    /**
+     * 兼容旧键名 `maxHistoryChars`：它原本是"字符"，但数量级和 token 相近，
+     * 直接沿用比让人重新配一遍更省事（老配置的 80000 现在按 80k token 生效）。
+     */
+    const hist = Number(next.agent?.maxHistoryTokens ?? next.agent?.maxHistoryChars)
+    this.maxHistoryTokens = Number.isFinite(hist) && hist > 0 ? Math.round(hist) : 130_000
 
     /**
      * 空闲静默的启停。

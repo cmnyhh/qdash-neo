@@ -74,12 +74,11 @@ export async function createConfig() {
        *
        * **不是轮数**：消息密就早点重建、消息稀就晚点，比固定轮数准确得多。
        */
-      maxHistoryChars: Schema.natural()
+      maxHistoryTokens: Schema.natural()
         .default(130000)
         .description(
-          '会话历史累计多少字符就重建（默认 130000 ≈ 8 万 token ≈ 27 轮）。' +
-            '调大能让它"记得更久"，但每轮输入更重、响应更慢；' +
-            '调小则重建更频繁。别超过 200 万（会撞模型上限）',
+          '上下文超过多少 token 就重建会话（默认 130000）。' +
+            '调大能记得更久，但每轮输入更重、响应更慢；调小则重建更频繁。别超过 100 万（会撞模型上限）',
         ),
       /**
        * 用户自定义的系统级提示。

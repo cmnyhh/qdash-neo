@@ -127,7 +127,7 @@ export const FIELD_LABELS = {
   'agent.maxTokens': '输出上限',
   'agent.systemPrompt': '系统提示',
   'agent.cwd': '工作目录',
-  'agent.maxHistoryChars': '会话历史重建阈值（字）',
+  'agent.maxHistoryTokens': '上下文超过多少 token 就重建会话',
   'agent.preset': 'Preset',
   'outbound.split': '分条方式',
   'outbound.maxChars': '单条上限',
