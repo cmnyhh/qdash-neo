@@ -3004,6 +3004,16 @@ export class QdashNeoService {
     const personaBlock = this.personaOf()?.card(chatKey) ?? ''
     const prompt = renderPrompt(ev, {
       botName: this.botName(),
+      /**
+       * **把全部别名交给 prompt。**
+       *
+       * `gates.botNames` 里有完整名单（判定"被点名"用），但模型看不见那份。
+       * 它只知道自己叫「白绫」，于是有人在群里喊「绫绫」时，
+       * 闸门放行了、它却读成"一个叫绫绫的人刚说话"。
+       */
+      // 只传人格卡里的别名：登录昵称往往是 QQ 号，那是 ID 不是"叫法"，
+      // 写成"也有人叫你「3216839364」"看着很怪，对判断也没帮助。
+      botAliases: this.personaOf()?.aliases() ?? [],
       context: isGroup ? ctxLines.lines : null,
       /**
        * **必须一起传**：`renderPrompt` 内部会用 `lines` 重新渲染一遍，
@@ -3426,6 +3436,18 @@ export class QdashNeoService {
      * 时机也对：`onUsage` 是回复之后异步回来的，正好赶在**下一轮投递前**
      * 打上 `pendingRebuild` 标记 —— 那时上一轮肯定结束了。
      */
+    /**
+     * **打一次原始结构**：确认 `usage` 里哪个字段才是"会话总量"。
+     *
+     * 已知 `usage.inputTokens` 只有几千（218/5867/…），而 DSH 界面显示
+     * 会话已用 449K —— 说明 `inputTokens` 是**本轮增量**，不是累计。
+     * 先看清有哪些字段，再决定用哪个判断重建。
+     */
+    if (!this.usageLogged) {
+      this.usageLogged = true
+      console.log(`qdash-neo: usage 原始结构 ${JSON.stringify(usage)}`)
+    }
+
     const input = Number(usage?.inputTokens ?? 0)
     if (input > 0 && input >= this.maxHistoryTokens) {
       this.pendingRebuild.set(chatKey, `上下文 ${Math.round(input / 1000)}k tokens`)

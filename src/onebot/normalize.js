@@ -240,7 +240,14 @@ const REPLY_HINT =
 export function renderPrompt(
   ev,
   {
-    botName = '机器人', context = null, partial = false, batch = null,
+    botName = '机器人',
+    /**
+     * 全部称呼（人格卡别名 + 登录昵称）。`botName` 之外的会作为
+     * "也有人这么叫你"列进 prompt —— 判定名单在内核里，模型看不见。
+     * @type {string[]}
+     */
+    botAliases = [],
+    context = null, partial = false, batch = null,
     memory = '', persona = '', deferToAgent = false, sleep = null, systemNote = '',
     /**
      * **已授权的插件引导**（拼好的字符串，空 = 没有）。
@@ -588,7 +595,24 @@ export function renderPrompt(
       ? '【当前消息｜@你的，请回应】'
       : '【当前消息｜群里在说话】'
   const current = lines.map(one).join('\n')
-  const intro = `[QQ群 ${ev.groupId}] 你在群里，昵称是「${botName}」。`
+  /**
+   * **别名也要告诉它 —— 不然有人叫别名，它不知道那是在叫自己。**
+   *
+   * `gates.botNames` 里存着全部称呼（判定"被点名"用），但那是内核的名单，
+   * 模型看不见。它只知道 intro 里那一个「昵称」。
+   *
+   * 于是群里喊「绫绫」时：闸门放行了（名单里有），但模型读到的是
+   * 「一个叫绫绫的人说话了」—— 它不认为那是自己。
+   *
+   * 列出其余别名，明确一句"也有人这么叫你"。
+   */
+  const nickOthers = (Array.isArray(botAliases) ? botAliases : [])
+    .map(a => String(a ?? '').trim())
+    .filter(a => a && a !== botName)
+  const intro = nickOthers.length
+    ? `[QQ群 ${ev.groupId}] 你在群里，昵称是「${botName}」，` +
+      `也有人叫你「${nickOthers.join('」「')}」—— 那都是在叫你。`
+    : `[QQ群 ${ev.groupId}] 你在群里，昵称是「${botName}」。`
 
   // 顺序：时间 → 身份 → 人设 → 长期记忆（久） → 群聊记录（新） → 本次消息。
   // 时间放最前：它是全局背景，"现在几点"会影响后面所有内容该怎么读
