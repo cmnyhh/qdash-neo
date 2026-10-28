@@ -189,6 +189,29 @@ export const QQ_TOOLS = [
    *
    * 和 `qq_send_card` 一模一样的坑：**注册 ≠ 登记**。
    */
+  /**
+   * 记住"这张图是什么"。
+   *
+   * 归 `write` 组：它确实改状态（写映射），但很轻，和发消息同级就够了。
+   *
+   * **不加它就会重演 `memory_add` / `qq_send_card` 的坑** ——
+   * 注册了但目录里没有 → guard 拒"不在白名单" → 模型看到报错，
+   * 而控制台里连这一项都没有（清单是从这份目录生成的）。
+   */
+  {
+    name: 'image_mark',
+    group: 'write',
+    action: 'mark',
+    title: '记图片描述',
+    description:
+      '记住这张图是什么，以后翻到就不用重新看图。看完图顺手调一次：' +
+      '表情包/梗图写含义（"无语""摸鱼摆烂"），正经照片写画面（"柴犬趴在键盘上打字"）。',
+    params: {
+      file: '图片 id，就是消息里 [图片:xxx] 的那个 xxx',
+      desc: '一句话描述。表情包写含义，照片写画面',
+    },
+    sideEffect: true,
+  },
   {
     name: 'memory_add',
     group: 'write',

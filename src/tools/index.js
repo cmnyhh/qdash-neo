@@ -167,6 +167,14 @@ export function createQqTools({
   enqueueSegments = null,
   memory = null,
   lastImageFile = null,
+  /**
+   * 图片描述的键值存取（`image_mark` 用）。
+   *
+   * 只给了 `get/set` 两个方法，不给整个 Store —— 工具层不需要认识数据库，
+   * 而"图片 id → 一句描述"本来只是一张表。
+   * @type {{ get: (k: string) => any, set: (k: string, v: any) => void }|null}
+   */
+  store = null,
   /** 能授权群管理操作的 QQ 号（Set 或数组）；由 `tools.adminOwners` 或私聊白名单推导 */
   ownerIds = null,
   /** 这次触发回复的消息发送者 QQ 号；`qq_kick` 用它做身份校验 */
@@ -267,7 +275,29 @@ export function createQqTools({
         content: [{ type: 'image', attachment: ref }],
         source: { kind: 'user' },
       })
-      return { ok: true, width: ref.width, height: ref.height, bytes: ref.bytes, mediaType }
+      /**
+       * **顺手催它记一句。**
+       *
+       * 它看完图就会回复群友，然后**再也不会想起这张图** —— 而历史里
+       * 那条消息会永远停在 `[图片]`。所以在这里（离它最近的工具返回值）
+       * 提醒一次，比写在工具描述里管用。
+       *
+       * 已经有描述就不再催：重复记一遍是浪费一轮。
+       */
+      let hint = ''
+      if (store && typeof store.get === 'function' && !store.get(`image:desc:${file}`)) {
+        hint =
+          '看完顺手调 image_mark 记一句它是什么（表情包写含义、照片写画面），' +
+          '以后翻到这条就不用重新看图了。'
+      }
+      return {
+        ok: true,
+        width: ref.width,
+        height: ref.height,
+        bytes: ref.bytes,
+        mediaType,
+        ...(hint ? { hint } : {}),
+      }
     } catch (err) {
       if (imageMode === 'on') throw err
       log('warn', `qdash-neo: 图片入库失败 msg=${err?.message}`)
@@ -320,6 +350,51 @@ export function createQqTools({
         if (!file) throw new Error('这个会话还没有收到过图片；请传消息里 [图片:xxx] 的 xxx')
       }
       return attachImage(exec, file, '图片')
+    },
+  )
+
+  /**
+   * **记住"这张图是什么"，供以后翻历史时用。**
+   *
+   * 为什么要这个工具：历史记录里如果只有 `[图片:xxx.jpg]`，模型下次翻到
+   * 只知道"有过一张图"。而**让它重新看图代价很大** —— 一张图进上下文要
+   * 吃几千 token，而大多数时候只是想知道"那张图是什么"。
+   *
+   * 所以：看过之后顺手记一句，以后历史里直接渲染成那句话。
+   *
+   * **描述由模型自己写**：表情包写情绪（"摸鱼摆烂"），照片写画面
+   * （"柴犬趴在键盘上"）。内核不分类 —— 那是模型的判断。
+   */
+  tool(
+    'image_mark',
+    '记住这张图是什么，以后翻到就不用重新看图。**看完图顺手调一次**：' +
+      '表情包/梗图写含义（如"无语""笑死""摸鱼摆烂"），正经照片写画面（如"柴犬趴在键盘上打字"）。' +
+      '一句就够，不用长篇。',
+    {
+      file: '图片 id，就是消息里 [图片:xxx] 的那个 xxx（`qq_get_image` 用过的那个）',
+      desc: '一句话描述。表情包写含义，照片写画面',
+    },
+    async args => {
+      const file = String(args.file ?? '').trim()
+      const desc = String(args.desc ?? '').trim()
+      if (!file) throw new Error('file 不能为空（传消息里 [图片:xxx] 的 xxx）')
+      if (!desc) throw new Error('desc 不能为空（写一句你看到的是什么）')
+      if (!store || typeof store.set !== 'function') {
+        return { ok: false, reason: '这个宿主没有存储通道，这句描述没记下来' }
+      }
+      const key = `image:desc:${file}`
+      /**
+       * **已经有描述就不覆盖。**
+       *
+       * 同一张表情包会被反复发，第二次再描述一遍只是浪费；
+       * 而且第一次的描述往往更准（那时它刚看仔细）。
+       */
+      const exists = typeof store.get === 'function' ? store.get(key) : null
+      if (exists) return { ok: true, skipped: 'already', file, desc: String(exists) }
+
+      const text = desc.slice(0, 120)
+      store.set(key, text)
+      return { ok: true, file, desc: text }
     },
   )
 

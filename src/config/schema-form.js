@@ -86,6 +86,15 @@ export const FIELD_LABELS = {
   'voice.maxSeconds': '语音时长上限（秒）',
   'voice.maxPerMinute': '每分钟最多几条',
   'voice.maxPerHour': '每小时最多几条',
+  /**
+   * `policy.sleep.*` 之前一个中文名都没有 —— 配置页显示成
+   * `policy.sleep.shortSeconds`，用户根本认不出这是"安静一会儿"。
+   */
+  'policy.sleep.enabled': '允许它自己想安静一会儿',
+  'policy.sleep.shortSeconds': '短期安静（秒）',
+  'policy.sleep.maxSeconds': '最长安静（秒）',
+  'policy.sleep.minSeconds': '最短安静（秒）',
+  'policy.sleep.maxConsecutive': '连续安静几次后不再允许',
   'proactive.enabled': '主动发言（定时唤起）',
   'proactive.maxPerDay': '每天最多主动发言几次',
   'proactive.quietHours': '安静时段（这段时间不唤起）',

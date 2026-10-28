@@ -17,7 +17,7 @@ import { JudgeChain } from './judge/chain.js'
 import { localDay, summarizeDay } from './memory/daily.js'
 import { Memory } from './memory/index.js'
 import { OneBotClient } from './onebot/client.js'
-import { normalizeEvent, renderPrompt } from './onebot/normalize.js'
+import { imageTag, normalizeEvent, renderPrompt } from './onebot/normalize.js'
 import { ReplyLedger } from './outbox/ledger.js'
 import { Outbox } from './outbox/queue.js'
 import { planReply } from './outbox/split.js'
@@ -227,6 +227,18 @@ export class QdashNeoService {
      */
     this.sleepMin = 30
     this.sleepMax = 600
+    /** 短期安静档（秒）：见 config.js 里的说明 */
+    this.sleepShort = 60
+    /** 连续安静几次后不再给该选项 */
+    this.maxConsecutiveSleep = 2
+    /**
+     * 每个会话连续安静了几次：chatKey → 次数。
+     *
+     * 用来实现"别连着静默"——到次数后不再提供 `[[SLEEP]]`，
+     * 否则它会每轮都选最省事的那条，最后等于永久隐身。
+     * **它一开口就清零**（见 `onAssistant`）。
+     */
+    this.consecutiveSleep = new Map()
     this.sleepEnabled = false
     /** 过闸门后真正回复的概率（0~1） */
     this.replyChance = 1
@@ -717,6 +729,20 @@ export class QdashNeoService {
           )
           return
         }
+
+        /**
+         * **记连续安静次数。**
+         *
+         * 到 `maxConsecutiveSleep` 之后，`renderPrompt` 就不再给 `[[SLEEP]]`
+         * 这个选项 —— 否则它会每轮都选最省事的那条，最后等于永久隐身。
+         * 它一开口就清零（见 `onAssistant`）。
+         */
+        const n = (this.consecutiveSleep.get(chatKey) ?? 0) + 1
+        this.consecutiveSleep.set(chatKey, n)
+        if (n > this.maxConsecutiveSleep) {
+          this.log('warn', `qdash-neo: ${chatKey} 已连续安静 ${n} 次，下一轮不再给休眠选项`)
+        }
+
         this.setSleep(chatKey, minutes)
       },
       // 模型给自己排个期（`[[LATER:N|备忘]]`）：到点再唤起一次，说不说由它重新判断
@@ -937,8 +963,18 @@ export class QdashNeoService {
     this.sleepEnabled = sl.enabled === true
     const min = Number(sl.minSeconds)
     const max = Number(sl.maxSeconds)
-    this.sleepMin = Number.isFinite(min) && min > 0 ? Math.round(min) : 600
-    this.sleepMax = Number.isFinite(max) && max >= this.sleepMin ? Math.round(max) : Math.max(this.sleepMin, 3600)
+    this.sleepMin = Number.isFinite(min) && min > 0 ? Math.round(min) : 30
+    this.sleepMax = Number.isFinite(max) && max >= this.sleepMin ? Math.round(max) : Math.max(this.sleepMin, 600)
+
+    /**
+     * **短期安静档**：`SILENT` 只管一轮、`SLEEP:600` 又太长，
+     * 真人"先看看再说"是这一档。
+     */
+    const short = Number(sl.shortSeconds)
+    this.sleepShort = Number.isFinite(short) && short > 0 ? Math.round(short) : 60
+    /** 连续安静几次后不再给这个选项（0 = 不限） */
+    const maxCons = Number(sl.maxConsecutive)
+    this.maxConsecutiveSleep = Number.isFinite(maxCons) && maxCons >= 0 ? Math.round(maxCons) : 2
   }
 
   /**
@@ -1205,6 +1241,28 @@ export class QdashNeoService {
           // `qq_get_image(file:"latest")` 用它兜底：模型常常不知道具体是哪张图
           lastImageFile: () => this.lastImage.get(chatKey) ?? '',
           /**
+           * `image_mark` 用它存"图片 id → 一句描述"。
+           *
+           * 只给 `kvGet/kvSet` 这两件事就够：工具层不需要认识整个 Store，
+           * 而描述映射本来就只是一张键值表。
+           */
+          store: {
+            get: k => {
+              try {
+                return this.store?.kvGet?.(k) ?? null
+              } catch {
+                return null
+              }
+            },
+            set: (k, v) => {
+              try {
+                this.store?.kvSet?.(k, v)
+              } catch {
+                /* 存不下不该让这轮对话失败 */
+              }
+            },
+          },
+          /**
            * 发分享卡片（`qq_send_card` 工具用）。
            *
            * 走的是这里而不是给工具一个 `client`：卡片要签名，而签名只有
@@ -1371,7 +1429,8 @@ export class QdashNeoService {
         direction: 'in',
         senderId: ev.userId,
         senderName: ev.senderName ?? '',
-        text: ev.text,
+        // 纯图消息的 ev.text 是空串 —— 存 [图片:file] 才不会在落库时丢掉图片
+        text: ev.text || (ev.hasImage ? imageTag(ev) : ''),
         ts: ev.ts,
         state: `dropped:${ing.reason}`,
       })
@@ -1481,7 +1540,8 @@ export class QdashNeoService {
         direction: 'in',
         senderId: ev.userId,
         senderName: ev.senderName ?? '',
-        text: ev.text,
+        // 纯图消息的 ev.text 是空串 —— 存 [图片:file] 才不会在落库时丢掉图片
+        text: ev.text || (ev.hasImage ? imageTag(ev) : ''),
         ts: ev.ts,
         state: `dropped:${trg.reason}`,
         atMe: ev.atMe ? 1 : 0,
@@ -1498,7 +1558,8 @@ export class QdashNeoService {
         direction: 'in',
         senderId: ev.userId,
         senderName: ev.senderName ?? '',
-        text: ev.text,
+        // 纯图消息的 ev.text 是空串 —— 存 [图片:file] 才不会在落库时丢掉图片
+        text: ev.text || (ev.hasImage ? imageTag(ev) : ''),
         ts: ev.ts,
         state: `dropped:${sleepGate.reason}`,
         atMe: ev.atMe ? 1 : 0,
@@ -1513,7 +1574,8 @@ export class QdashNeoService {
       direction: 'in',
       senderId: ev.userId,
       senderName: ev.senderName ?? '',
-      text: ev.text,
+      // 纯图消息的 ev.text 是空串 —— 存 [图片:file] 才不会在落库时丢掉图片
+      text: ev.text || (ev.hasImage ? imageTag(ev) : ''),
       ts: ev.ts,
       state: 'delivered',
       atMe: ev.atMe ? 1 : 0,
@@ -1564,7 +1626,7 @@ export class QdashNeoService {
       direction: 'in',
       senderId: ev.userId,
       senderName: ev.senderName ?? '',
-      text: ev.text,
+      text: ev.text || (ev.hasImage ? imageTag(ev) : ''),
       ts: ev.ts,
       state: 'context',
       atMe: ev.atMe ? 1 : 0,
@@ -2204,7 +2266,13 @@ export class QdashNeoService {
     this.context.append(ev.chatKey, {
       userId: ev.userId,
       senderName: ev.senderName ?? '',
-      text: ev.text || (ev.hasImage ? '[图片]' : ''),
+      /**
+       * **纯图消息的 `ev.text` 是空串**（它只拼文字段）。
+       *
+       * 早先这里写 `'[图片]'`，没有 id —— 历史渲染时既查不到描述，
+       * 也无法回看。现在带 id，渲染那一层才能把它换成描述。
+       */
+      text: ev.text || (ev.hasImage ? imageTag(ev) : ''),
       atMe: ev.atMe,
       ts: ev.ts ?? Date.now(),
       messageId: ev.messageId,
@@ -2250,7 +2318,40 @@ export class QdashNeoService {
   contextText(chatKey, messageIdOrIds, { beforeMessageId } = {}) {
     const ids = Array.isArray(messageIdOrIds) ? messageIdOrIds : [messageIdOrIds]
     const { lines, partial } = this.context.recent(chatKey, { excludeMessageIds: ids, beforeMessageId })
-    return { text: renderContextBlock(lines, { partial }), lines, partial }
+    return {
+      text: renderContextBlock(lines, {
+        partial,
+        /**
+         * **历史图片只渲染描述，绝不带 id。**
+         *
+         * 有描述 → `[柴犬趴在键盘上]`；没有 → `[图片]`。
+         * 不带 id 是刻意的：模型没有参数可传，就不会去 `qq_get_image`
+         * 把旧图重新读一遍（视觉 token 是大头，而旧图对当下几乎无用）。
+         */
+        imageDesc: f => this.imageDescOf(f),
+      }),
+      lines,
+      partial,
+    }
+  }
+
+  /**
+   * 查一张图的描述（`image_mark` 写、历史渲染读）。
+   *
+   * 没描述就返回空串 —— 调用方据此降级成 `[图片]`。
+   * 任何异常都吞掉：**渲染路径不能因为查不到描述而失败**。
+   *
+   * @param {string} file
+   * @returns {string}
+   */
+  imageDescOf(file) {
+    const k = String(file ?? '').trim()
+    if (!k) return ''
+    try {
+      return String(this.store?.kvGet?.(`image:desc:${k}`) ?? '').trim()
+    } catch {
+      return ''
+    }
   }
 
   /**
@@ -2435,8 +2536,12 @@ export class QdashNeoService {
        *   - 两者都不满足才正常给
        */
       sleep:
-        this.sleepEnabled && !ev.proactive && !this.isSummon(ev)
-          ? { min: this.sleepMin, max: this.sleepMax }
+        this.sleepEnabled &&
+        !ev.proactive &&
+        !this.isSummon(ev) &&
+        // 连续安静到次数后不再给 —— 见 config 里 `maxConsecutive` 的说明
+        (this.consecutiveSleep.get(chatKey) ?? 0) < this.maxConsecutiveSleep
+          ? { min: this.sleepMin, max: this.sleepMax, short: this.sleepShort }
           : null,
 
       /**
@@ -2691,6 +2796,15 @@ export class QdashNeoService {
    * 要能分清"它想了但决定不说"和"它压根没跑"，否则只有一个空白的回合。
    */
   onAssistant(chatKey, text) {
+    /**
+     * **它开口了 → 连续安静清零。**
+     *
+     * 这条是"别连着静默"的另一半：计数只在真正说话时才归零，
+     * 而不是"过了多久就自动重置"—— 后者会让"每轮说一句废话再睡"
+     * 绕开限制。
+     */
+    this.consecutiveSleep.delete(chatKey)
+
     /**
      * 本回合已经通过工具发过几条。
      *

@@ -175,9 +175,50 @@ const UNTRUSTED_HEADER =
  */
 export function renderContextBlock(
   lines,
-  { partial = false, maxNameChars = 16, now = Date.now(), staleAfterMs = 30 * 60_000 } = {},
+  {
+    partial = false,
+    maxNameChars = 16,
+    now = Date.now(),
+    staleAfterMs = 30 * 60_000,
+    /**
+     * **历史图片只给描述，绝不给 id。**
+     *
+     * 这是性能约束，不是格式偏好：一旦历史里留下 `[图片:6324...jpg]`，
+     * 模型就会想去 `qq_get_image` 看一眼 —— 那等于每翻一次旧账，
+     * 就把一张图重新塞进上下文（视觉 token 是大头）。
+     *
+     * 而"看一眼旧图"对当下对话几乎从不必要。所以：
+     *
+     *   有描述 → `[柴犬趴在键盘上]`
+     *   没描述 → `[图片]`
+     *   **永远不出现 id** —— 没有参数，它连调都调不了
+     *
+     * 比写一句"不要回看历史图片"的禁令可靠得多：禁令会被忽略，缺参数不会。
+     *
+     * @type {(file: string) => string|undefined}
+     */
+    imageDesc = null,
+  } = {},
 ) {
   if (!lines || lines.length === 0) return ''
+  /**
+   * 把文本里的 `[图片:xxx]` 换掉。
+   *
+   * `line.text` 可能是 `[图片:xxx]`（纯图消息）或 `文字[图片:xxx]文字`（图文混排），
+   * 所以用全局替换而不是整串相等。
+   */
+  const scrubImage = text => {
+    if (!text.includes('[图片')) return text
+    return text.replace(/\[图片:([^\]]+)\]/g, (_m, file) => {
+      let desc = ''
+      try {
+        desc = String(imageDesc?.(String(file).trim()) ?? '').trim()
+      } catch {
+        desc = ''
+      }
+      return desc ? `[${desc}]` : '[图片]'
+    })
+  }
   const body = lines.map(line => {
     // 自己说过的话单列一种身份：既不是"认识的人"，也不是"陌生人"，
     // 而且绝不能被「非指令」那段覆盖成"群友说的"
@@ -191,7 +232,7 @@ export function renderContextBlock(
       ? `（${Math.max(1, Math.round(ageMs / 60000))}分钟前）`
       : ''
     // 单行化：换行会把一条群消息伪造成两条，也在视觉上骗过"谁说的"
-    const text = String(line.text ?? '').replace(/\s*\n\s*/g, ' ⏎ ').slice(0, 500)
+    const text = scrubImage(String(line.text ?? '').replace(/\s*\n\s*/g, ' ⏎ ')).slice(0, 500)
     return `${who}：${text}${at}${stale}`
   })
   const tail = partial ? '\n（更早的消息因长度限制未展示）' : ''
