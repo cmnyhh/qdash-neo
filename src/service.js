@@ -180,22 +180,44 @@ export class QdashNeoService {
     /** 主动评估计数：chatKey → { day, n }，用于每日上限（内存级即可） */
     this.proactiveUsed = new Map()
     /**
-     * 每个会话已经投递了多少轮：chatKey → 次数。
+     * 每个会话累积了多少**字符**：chatKey → 累计长度。
      *
-     * **agent 会话历史会无限增长**，而 DSH 没有压缩机制 —— 群聊跑一天就能涨到
-     * `prompt is too long: 1061352 tokens > 1048576 maximum`，之后那个群
-     * 每一轮都失败。到阈值就重建会话，把历史清零。
+     * **为什么不按轮数：agent 历史是累积的。**
      *
-     * 重建不丢上下文：群聊记录（`context`）是从数据库现拼的。
+     * 每轮 prompt 约 4700 字，但第 N 轮的输入不是 4700，而是
+     * `N × 4700` —— 历史整段重发。所以：
+     *
+     *     第  1 轮：输入   4700 字   → 快
+     *     第 40 轮：输入 18.8 万字   → 开始慢
+     *     第 80 轮：输入 37.6 万字   → 又慢又贵
+     *
+     * 按轮数判断等于"消息短就撑着、消息长就撞墙"，
+     * 而**按累计字符**能保证每一轮的输入都在可控范围。
+     */
+    this.historyChars = new Map()
+    /**
+     * 待重建的会话：chatKey → 原因。
+     *
+     * **只记标记，不在当轮末尾清。** `deliver` 返回时回复可能还在生成，
+     * 那时删会话会把这一条打断；真正的清理放到下一轮投递之前。
+     */
+    this.pendingRebuild = new Map()
+    /**
+     * 累计多少字符就重建会话。
+     *
+     * 13 万字 ≈ 8 万 token。这个量级下每轮输入还能接受（几秒），
+     * 而 104 万 token 的上限离得远。
+     *
+     * 按每轮 4700 字算，约 **27 轮**一重建 —— 比固定 80 轮更早，
+     * 但**不会出现"第 80 轮输入 37 万字"那种卡顿**。
+     */
+    this.maxHistoryChars = 130_000
+    /**
+     * 轮数兜底：极端情况下（每轮极短）字符数涨得慢，但轮数太多也会
+     * 让 DSH 自己的会话元数据膨胀，所以仍留一个硬上限。
      */
     this.turnCount = new Map()
-    /**
-     * 多少轮重建一次会话。
-     *
-     * 80 轮 × 每轮几千 token ≈ 几十万，离 104 万上限还有余量；
-     * 太大（比如 300）会撞墙，太小则频繁丢历史、模型反复"自我介绍"。
-     */
-    this.maxTurnsPerSession = 80
+    this.maxTurnsPerSession = 200
     /** 沉睡时长范围（**秒**），由配置决定，用于夹住模型给的数值 */
     /**
      * 沉睡范围（秒）。**和 `config.js` 里 `sleep.minSeconds/maxSeconds` 的默认值一致**。
@@ -2281,6 +2303,18 @@ export class QdashNeoService {
     const isGroup = ev.kind === 'group'
 
     /**
+     * **待重建的会话在这里清 —— 只在新一轮开始之前。**
+     *
+     * 上一轮末尾只打标记（那时回复可能还在生成），真正的 `release` + 删目录
+     * 放到这里：此刻上一轮**确定已经结束**（串行链保证），清掉不会打断任何东西。
+     */
+    const pending = this.pendingRebuild.get(chatKey)
+    if (pending) {
+      this.pendingRebuild.delete(chatKey)
+      await this.rebuildSession(chatKey, pending)
+    }
+
+    /**
      * 记下这一批的消息 ID：`qq_send_message({ reply_to })` 只接受这些值。
      *
      * 用**真实的 messageId**（不是批内序号），所以这里存的就是模型在 prompt 里
@@ -2460,12 +2494,37 @@ export class QdashNeoService {
     try {
       await this.router.deliver(chatKey, prompt)
 
-      // 轮数计数：到阈值就重建，别等它涨爆
+      /**
+       * **按累计字符判断，不按轮数。**
+       *
+       * 轮数掩盖了真正的问题：第 80 轮的输入是前 79 轮的总和，
+       * 按"80 轮"判断会先经历一段越来越慢的区间。按字符则平滑得多 ——
+       * 消息密就早点重建，消息稀就晚点，**每轮输入始终可控**。
+       */
+      const used = (this.historyChars.get(chatKey) ?? 0) + prompt.length
+      this.historyChars.set(chatKey, used)
+
       const turns = (this.turnCount.get(chatKey) ?? 0) + 1
       this.turnCount.set(chatKey, turns)
-      if (turns >= this.maxTurnsPerSession) {
+
+      /**
+       * **只打标记，不在这里清。**
+       *
+       * `deliver` 返回 ≠ 回复完成 —— 回复是通过 `attachSessionEvents` 的
+       * `onReply` 异步回来的。这时候 `release` + 删目录，等于在它写回复的
+       * 中途把会话掀了，轻则这一条发不出去，重则整个 handle 处于半死状态。
+       *
+       * 所以只记下"该清了"，真正的清理放在**下一轮投递之前**
+       * （见 `deliver` 开头），那时上一轮肯定已经结束。
+       */
+      if (used >= this.maxHistoryChars) {
+        this.pendingRebuild.set(chatKey, `历史累计 ${Math.round(used / 1000)}k 字`)
+        this.historyChars.set(chatKey, 0)
         this.turnCount.set(chatKey, 0)
-        this.rebuildSession(chatKey, `已 ${turns} 轮，主动重建`)
+      } else if (turns >= this.maxTurnsPerSession) {
+        this.pendingRebuild.set(chatKey, `已 ${turns} 轮（轮数兜底）`)
+        this.historyChars.set(chatKey, 0)
+        this.turnCount.set(chatKey, 0)
       }
 
       const extra = judgement
@@ -2491,10 +2550,12 @@ export class QdashNeoService {
        */
       if (/prompt is too long|tokens?\s*>\s*\d+\s*maximum/i.test(msg)) {
         this.log('warn', `qdash-neo: ${chatKey} 会话历史超限，重建后重试一次`)
-        this.rebuildSession(chatKey, '上下文超限')
+        await this.rebuildSession(chatKey, '上下文超限')
         try {
           await this.router.deliver(chatKey, prompt)
+          // 重建后从头计：只算这一轮的体积
           this.turnCount.set(chatKey, 1)
+          this.historyChars.set(chatKey, prompt.length)
           this.log('info', `qdash-neo: ${chatKey} 重建后投递成功`)
           return
         } catch (err2) {
@@ -2528,11 +2589,16 @@ export class QdashNeoService {
    * @param {string} chatKey
    * @param {string} why 日志里写明原因
    */
-  rebuildSession(chatKey, why = '') {
+  async rebuildSession(chatKey, why = '') {
     try {
       const sessionId = SessionRouter.sessionIdOf(chatKey)
-      // 先放掉内存里的 handle，再删磁盘目录：只删磁盘的话，内存里那份还在用
-      Promise.resolve(this.router?.release?.(chatKey)).catch(() => {})
+      /**
+       * **先等内存里的 handle 释放，再删磁盘目录。**
+       *
+       * 顺序反了会很糟：目录删了、内存里那份还活着，它继续往一个已删除的
+       * 记录里追加，下次 resume 时可能读到半截文件。
+       */
+      await this.router?.release?.(chatKey)
       const removed = SessionRouter.removeStoredSession(sessionId, { log: this.log })
       this.log(
         'warn',
@@ -2820,6 +2886,15 @@ export class QdashNeoService {
     this.batchMaxWaitMs = Number.isFinite(jc.batchMaxWaitMs) ? jc.batchMaxWaitMs : 20000
     this.batchMaxMessages = Number.isFinite(jc.batchMaxMessages) ? jc.batchMaxMessages : 20
     this.atLookaheadMs = Number.isFinite(jc.atLookaheadMs) ? jc.atLookaheadMs : 2000
+
+    /**
+     * 会话历史重建阈值（字符）。
+     *
+     * 改小 → 重建更频繁，每轮输入更轻、响应更快，但"记得"的轮次更少；
+     * 改大 → 记得更久，但每轮输入更重（第 N 轮的输入 = 前 N-1 轮之和）。
+     */
+    const hist = Number(next.agent?.maxHistoryChars)
+    this.maxHistoryChars = Number.isFinite(hist) && hist > 0 ? Math.round(hist) : 130_000
 
     this.gates?.applyConfig?.(next)
 
