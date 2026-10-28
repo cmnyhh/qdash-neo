@@ -142,6 +142,29 @@ export class QdashNeoService {
      */
     this.sleepUntil = new Map()
     /**
+     * 这次沉睡**是谁要求的**：chatKey → `'model'` | `'idle'`。
+     *
+     * 必须区分，否则两种语义会互相覆盖：
+     *
+     *   `model` 模型自己输出 `[[SLEEP:N]]` —— **别人说话不该打断它**
+     *   `idle`  内核判定"群里没人说话" —— **有人说话就该立刻醒**
+     *
+     * 不加这个字段的话，模型说"睡十分钟"会被一次普通消息清掉，
+     * 而空闲静默会赖着不走。
+     */
+    this.sleepReason = new Map()
+    /**
+     * 每个会话最后一次有人说话的时间：chatKey → 时间戳。
+     *
+     * 「中时静默」的判据：`now - lastActivity >= idleSleep.afterMinutes`。
+     * 只记内存 —— 重启后重新计时即可，不需要持久化（睡一觉起来重新算很合理）。
+     */
+    this.lastActivity = new Map()
+    /** 每个会话已经排的"找话题"定时器：chatKey → timeout，避免重复排 */
+    this.idleTimers = new Map()
+    /** 每个会话最近一小时的主动找话题次数：chatKey → { hour, n } */
+    this.idleUsed = new Map()
+    /**
      * 每个会话最近一张图的 file 标识：chatKey → file。
      *
      * 给 `qq_get_image(file:"latest")` 用。模型经常不知道具体是哪张图
@@ -794,6 +817,8 @@ export class QdashNeoService {
     // 系统提示写进工作区 AGENTS.md（system 层，新建会话才读得到）
     this.applyInstructions()
     this.startDailyLoop()
+    // 群安静够久就进静默（默认关，`policy.idleSleep.enabled` 打开才生效）
+    this.startIdleWatcher()
   }
 
   /**
@@ -818,6 +843,16 @@ export class QdashNeoService {
     this.dailyTimer = null
     if (this.dailyBootTimer) clearTimeout(this.dailyBootTimer)
     this.dailyBootTimer = null
+    /**
+     * 空闲巡检 + 每个群排的"找话题"定时器。
+     *
+     * 和 `dailyTimer` 同一个道理：不清掉进程就退不出去，
+     * 而测试里每个 service 实例都挂一个的话，几十个 interval 一起空转。
+     */
+    if (this.idleSweeper) clearInterval(this.idleSweeper)
+    this.idleSweeper = null
+    for (const t of this.idleTimers.values()) clearTimeout(t)
+    this.idleTimers.clear()
     return dropped
   }
 
@@ -1057,7 +1092,14 @@ export class QdashNeoService {
    * @param {number} minutes
    * @returns {number} 截止时间戳
    */
-  setSleep(chatKey, seconds) {
+  /**
+   * @param {string} chatKey
+   * @param {number} seconds
+   * @param {'model'|'idle'} [reason]
+   *   `model` = 模型自己说"睡"；`idle` = 内核判定群安静。
+   *   **两者的退出条件不同**：`idle` 遇人说话就醒，`model` 不。
+   */
+  setSleep(chatKey, seconds, reason = 'model') {
     const s = Math.min(this.sleepMax, Math.max(this.sleepMin, Math.round(Number(seconds) || this.sleepMin)))
     const until = Date.now() + s * 1000
     this.sleepUntil.set(chatKey, until)
@@ -1650,6 +1692,15 @@ export class QdashNeoService {
     }
 
     this.rememberContext(ev)
+    /**
+     * **有人说话 = 群不安静了**。
+     *
+     * 必须在 `sleepGate` 之前调：它会顺手解除「空闲静默」，
+     * 否则静默中的群来了消息却被自己拦掉，看起来就是"死了一样"。
+     *
+     * （`sleepReason === 'model'` 的不解 —— 那是模型自己要求的安静。）
+     */
+    this.recordActivity(ev.chatKey)
     if (ev.imageFile) this.lastImage.set(ev.chatKey, ev.imageFile)
 
     /**
@@ -1806,6 +1857,7 @@ export class QdashNeoService {
   /** 清掉沉睡状态（内存 + kv），唤醒时用 */
   clearSleep(chatKey) {
     this.sleepUntil.delete(chatKey)
+    this.sleepReason.delete(chatKey)
     try {
       this.store?.kvSet?.(`sleep:${chatKey}`, 0)
     } catch (err) {
@@ -1846,6 +1898,138 @@ export class QdashNeoService {
     this.laterTimers.set(chatKey, timer)
     this.log('info', `qdash-neo: ${chatKey} 排期 ${m} 分钟后重新评估${hint ? `（备忘：${hint}）` : ''}`)
     return at
+  }
+
+  /* ---------------- 中时静默（群安静） ---------------- */
+
+  /**
+   * 记一次"有人说话"，并解除**空闲静默**。
+   *
+   * 只解除 `idle` 的，不动 `model` 的 —— 模型自己说"睡十分钟"是它主动要求的，
+   * 不该被一句闲聊打断（那会让"想安静一会儿"永远做不到）。
+   */
+  recordActivity(chatKey) {
+    this.lastActivity.set(chatKey, Date.now())
+    if (this.sleepReason.get(chatKey) === 'idle' && this.isSleeping(chatKey)) {
+      this.clearSleep(chatKey)
+      this.log('info', `qdash-neo: ${chatKey} 有人说话，退出空闲静默`)
+    }
+  }
+
+  /**
+   * 起空闲巡检。**全局一个 interval**，不是每群一个。
+   *
+   * 每分钟扫一遍 `lastActivity`，够久没动静的群进入静默。
+   * 关闭时什么都不挂 —— 否则测试进程退不出去（和 `dailyTimer` 同一个道理）。
+   */
+  startIdleWatcher() {
+    const cfg = this.config?.policy?.idleSleep ?? {}
+    if (cfg.enabled !== true || this.idleSweeper) return
+    this.idleSweeper = setInterval(() => {
+      try {
+        this.checkIdle()
+      } catch (err) {
+        this.log('warn', `qdash-neo: 空闲巡检失败 msg=${err?.message}`)
+      }
+    }, 60_000)
+    this.idleSweeper.unref?.()
+    this.log('info', 'qdash-neo: 空闲静默巡检已启动（每分钟一次）')
+  }
+
+  /** 扫一遍：哪些群安静够久、该进静默。 */
+  checkIdle() {
+    const cfg = this.config?.policy?.idleSleep ?? {}
+    if (cfg.enabled !== true) return
+    const afterMin = Number(cfg.afterMinutes) > 0 ? Number(cfg.afterMinutes) : 30
+    const quietMin = Number(cfg.quietMinutes) > 0 ? Number(cfg.quietMinutes) : 120
+    const now = Date.now()
+
+    for (const [chatKey, last] of this.lastActivity) {
+      // 私聊不参与：一对一没有"群里没人说话"这回事
+      if (!chatKey.startsWith('g:')) continue
+      const idleMin = (now - last) / 60_000
+      if (idleMin < afterMin) continue
+      if (this.isSleeping(chatKey)) continue
+
+      this.setSleep(chatKey, quietMin * 60, 'idle')
+      this.log('info', `qdash-neo: ${chatKey} 安静 ${Math.round(idleMin)} 分钟，进入中时静默`)
+      this.scheduleIdleFindTopic(chatKey)
+    }
+  }
+
+  /**
+   * 排一次"自己找话题"，**随机间隔**。
+   *
+   * 固定周期会让它像闹钟（真人不会每天 15:00 准时抛话题），
+   * 所以每次在 `[minMinutes, maxMinutes)` 里取一个随机值。
+   */
+  scheduleIdleFindTopic(chatKey) {
+    const cfg = this.config?.policy?.idleSleep ?? {}
+    if (cfg.findTopic === false) return
+    if (this.idleTimers.has(chatKey)) return
+
+    const min = Number(cfg.minMinutes) > 0 ? Number(cfg.minMinutes) : 15
+    const maxRaw = Number(cfg.maxMinutes)
+    const max = maxRaw > min ? maxRaw : min + 30
+    const waitMin = min + Math.random() * (max - min)
+
+    const timer = setTimeout(() => {
+      this.idleTimers.delete(chatKey)
+      this.findTopic(chatKey).catch(err => {
+        this.log('error', `qdash-neo: 找话题失败 ${chatKey} msg=${err?.message}`)
+      })
+    }, Math.round(waitMin * 60_000))
+    timer.unref?.()
+    this.idleTimers.set(chatKey, timer)
+    this.log('info', `qdash-neo: ${chatKey} 静默中，约 ${Math.round(waitMin)} 分钟后试着找话题`)
+  }
+
+  /**
+   * 静默期间主动找一次话题。
+   *
+   * **它仍然可以不发** —— `openProactive` 给的是判断机会，不是"必须说话"。
+   * 说与不说由它决定，这里只负责"到点了叫它一声"。
+   */
+  async findTopic(chatKey) {
+    const cfg = this.config?.policy?.idleSleep ?? {}
+    // 只在空闲静默里找话题；模型自己睡的不打扰
+    if (this.sleepReason.get(chatKey) !== 'idle' || !this.isSleeping(chatKey)) return
+
+    // 每小时硬上限：随机间隔再随机，也要有个天花板防刷屏
+    const cap = Number(cfg.maxPerHour) > 0 ? Number(cfg.maxPerHour) : 2
+    const hour = Math.floor(Date.now() / 3_600_000)
+    const used = this.idleUsed.get(chatKey)
+    const n = used && used.hour === hour ? used.n : 0
+    if (n >= cap) {
+      this.log('info', `qdash-neo: ${chatKey} 本小时找话题已达 ${cap} 次，跳过`)
+      return
+    }
+
+    const sleepUntilBefore = this.isSleeping(chatKey)
+    const activeBefore = this.lastActivity.get(chatKey) ?? 0
+    this.idleUsed.set(chatKey, { hour, n: n + 1 })
+
+    try {
+      // `openProactive` 内部会 clearSleep（让它清醒地看内容），这是对的
+      await this.openProactive(chatKey, { hint: '' })
+    } finally {
+      /**
+       * **把静默还回去。**
+       *
+       * `openProactive` 打破睡眠是为了"叫醒它看内容"，但静默本身没结束 ——
+       * 不恢复的话，一次找话题就把静默永久解除了。
+       *
+       * 只在"期间没人说话"时恢复：有人说话的话 `recordActivity` 已经清掉了静默，
+       * 那种情况下不该再塞回去。
+       */
+      const quiet = this.lastActivity.get(chatKey) ?? 0
+      if (quiet > activeBefore) return   // 期间有人说话 → 保持清醒
+      const left = sleepUntilBefore - Date.now()
+      if (left > 5_000) {
+        this.setSleep(chatKey, Math.round(left / 1000), 'idle')
+        this.scheduleIdleFindTopic(chatKey)
+      }
+    }
   }
 
   /**
@@ -3082,6 +3266,21 @@ export class QdashNeoService {
      */
     const hist = Number(next.agent?.maxHistoryChars)
     this.maxHistoryChars = Number.isFinite(hist) && hist > 0 ? Math.round(hist) : 130_000
+
+    /**
+     * 空闲静默的启停。
+     *
+     * 开了就确保巡检在跑（`startIdleWatcher` 自身幂等）；关掉要**真停** ——
+     * 只改配置不停定时器的话，它还会继续把群弄进静默。
+     */
+    if (next.policy?.idleSleep?.enabled === true) {
+      this.startIdleWatcher()
+    } else if (this.idleSweeper) {
+      clearInterval(this.idleSweeper)
+      this.idleSweeper = null
+      for (const t of this.idleTimers.values()) clearTimeout(t)
+      this.idleTimers.clear()
+    }
 
     this.gates?.applyConfig?.(next)
 

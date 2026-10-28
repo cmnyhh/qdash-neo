@@ -191,6 +191,50 @@ export async function createConfig() {
           .default(2)
           .description('连续安静几次后不再给该选项（0 = 不限）。默认 2：连着两次就该说点什么了'),
       }).description('随机沉睡：模型自己决定休息多久（秒），期间完全不响应'),
+
+      /**
+       * **中时静默：群里安静一段时间后自动闭嘴。**
+       *
+       * 和「随机沉睡」的区别是**谁做决定**：
+       *
+       *   `sleep`     模型自己输出 `[[SLEEP:N]]` —— 它觉得这会儿不该接话
+       *   `idleSleep` 内核按"群里多久没人说话"判定 —— 没人说话本来就轮不到它
+       *
+       * 两件事都进入同一个 `sleepUntil` 状态，所以**「被 @ 必醒」这条对两者都成立**
+       * （判断写在 `sleepGate` 最前面，和"为什么睡"无关）。
+       *
+       * 静默期间它**可以自己找话题**（`proactive`），这是有意的：
+       * 群安静时恰恰是主动开口的时机，而不是"永远别说话"。
+       */
+      idleSleep: Schema.object({
+        enabled: Schema.boolean()
+          .default(false)
+          .description('群安静一段时间后自动进入静默（默认关；开了要配合「主动发言」才有意义）'),
+        afterMinutes: Schema.natural()
+          .default(30)
+          .description('群里多少分钟没人说话就算"安静"，进入静默'),
+        quietMinutes: Schema.natural()
+          .default(120)
+          .description('静默持续多久（分钟）。到点自动结束，有人说话也会提前结束'),
+        /**
+         * 静默期间自己找话题。
+         *
+         * 用**随机间隔**而不是固定周期：固定周期会让它像闹钟，
+         * 而真人不会每天 15:00 准时抛一个话题。
+         */
+        findTopic: Schema.boolean()
+          .default(true)
+          .description('静默期间自己找话题（随机间隔唤起一次，说不说仍由它决定）'),
+        minMinutes: Schema.natural()
+          .default(15)
+          .description('两次"找话题"之间最少隔多少分钟（随机区间的下限）'),
+        maxMinutes: Schema.natural()
+          .default(45)
+          .description('两次"找话题"之间最多隔多少分钟（随机区间的上限）'),
+        maxPerHour: Schema.natural()
+          .default(2)
+          .description('每小时最多主动找几次话题（硬上限，防刷屏；0 = 不限）'),
+      }).description('中时静默：群安静后自动闭嘴，期间可随机找话题（被 @ 仍会唤醒）'),
     }).description('准入策略'),
 
     /**
