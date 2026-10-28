@@ -152,7 +152,20 @@ export async function createConfig() {
       sleep: Schema.object({
         enabled: Schema.boolean().default(true).description('允许模型自行决定闭麦休息一段时间'),
         // 用秒而不是分钟：等待类参数在配置里混单位最容易出错（乘 60 漏了或乘两次）
-        minSeconds: Schema.natural().default(30).description('沉睡时长下限（秒），也是提示词里给模型的范围下界'),
+        /**
+         * **没有单独的 `minSeconds`。**
+         *
+         * 早先有四个数：`min` / `max` / `shortMin` / `shortMax`，而 `min` 和
+         * `shortMin` 都在管"下限"，语义重复且会互相抵消 ——
+         * 比如把 `min` 设成 200，短期随机 45~120 就会被强行抬到 200，
+         * **随机性被吃掉且毫无提示**。
+         *
+         * 现在三个，各管一件事：
+         *
+         *   `shortMinSeconds`  随机区间下限，**同时是全局地板**
+         *   `shortMaxSeconds`  随机区间上限
+         *   `maxSeconds`       天花板（模型自己写大数字时压到这儿）
+         */
         /**
          * **原来是 60 秒，太短了 —— 等于没睡。**
          *

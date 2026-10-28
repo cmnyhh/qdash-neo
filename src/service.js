@@ -242,22 +242,27 @@ export class QdashNeoService {
      */
     this.turnCount = new Map()
     this.maxTurnsPerSession = 200
-    /** 沉睡时长范围（**秒**），由配置决定，用于夹住模型给的数值 */
     /**
-     * 沉睡范围（秒）。**和 `config.js` 里 `sleep.minSeconds/maxSeconds` 的默认值一致**。
+     * 沉睡范围（秒）。**兜底值，`applyConfig` 跑完就以配置为准**。
      *
-     * 这里只是 `applyConfig` 跑之前的兜底值；不一致的话，
-     * 启动瞬间模型看到的范围和配置页显示的会对不上。
+     * 三个数各管一件事，没有独立的 `minSeconds`：
+     *   `sleepShortMin`  随机区间下限 + **全局地板**
+     *   `sleepShortMax`  随机区间上限
+     *   `sleepMax`       天花板
+     *
+     * `sleepMin` 是 `sleepShortMin` 的别名（夹取逻辑在用）。
      */
-    this.sleepMin = 30
+    this.sleepShortMin = 45
+    this.sleepShortMax = 120
+    this.sleepMin = 45
     this.sleepMax = 600
     /**
      * 短期安静的随机区间（秒）：模型写 `[[SLEEP]]`（不带数字）时用。
      *
      * 固定一个值会让每次"先看看再说"都精确睡同样久，太像定时器。
+     *
+     * （初始值已在上面的"沉睡范围"里一起给了，这里不再重复。）
      */
-    this.sleepShortMin = 45
-    this.sleepShortMax = 120
     /** 连续安静几次后不再给该选项 */
     this.maxConsecutiveSleep = 2
     /**
@@ -1017,25 +1022,38 @@ export class QdashNeoService {
 
     const sl = pc.sleep ?? {}
     this.sleepEnabled = sl.enabled === true
-    const min = Number(sl.minSeconds)
-    const max = Number(sl.maxSeconds)
-    this.sleepMin = Number.isFinite(min) && min > 0 ? Math.round(min) : 30
-    this.sleepMax = Number.isFinite(max) && max >= this.sleepMin ? Math.round(max) : Math.max(this.sleepMin, 600)
 
     /**
-     * **短期安静档**：`SILENT` 只管一轮、`SLEEP:600` 又太长，
-     * 真人"先看看再说"是这一档。
-     */
-    /**
-     * 短期安静的随机区间。
+     * **短期安静的随机区间**（模型写 `[[SLEEP]]` 不带数字时用）。
      *
-     * 上限低于下限时自动拉平成"下限 + 30" —— 配置填反了不该让它睡不了。
+     * `shortMinSeconds` 同时是**全局地板** —— 模型写 `[[SLEEP:5]]` 也会被抬到这里。
+     * 不再单独设 `minSeconds`：两个"下限"会互相抵消（把 min 设成 200，
+     * 短期随机 45~120 就会被抬到 200，随机性被吃掉）。
      */
     const sMin = Number(sl.shortMinSeconds)
     const sMax = Number(sl.shortMaxSeconds)
     this.sleepShortMin = Number.isFinite(sMin) && sMin > 0 ? Math.round(sMin) : 45
     this.sleepShortMax =
       Number.isFinite(sMax) && sMax >= this.sleepShortMin ? Math.round(sMax) : this.sleepShortMin + 30
+
+    /**
+     * **天花板**：模型自己写大数字时压到这儿（防 `[[SLEEP:9999]]`）。
+     *
+     * 不低于短期上限，否则短期区间会被压扁。
+     */
+    const max = Number(sl.maxSeconds)
+    this.sleepMax =
+      Number.isFinite(max) && max >= this.sleepShortMax
+        ? Math.round(max)
+        : Math.max(this.sleepShortMax, 600)
+
+    /**
+     * `sleepMin` 保留为**派生值**（= 短期下限），`setSleep` 用它当地板。
+     *
+     * 不直接删掉这个名字，是因为它已经在夹取逻辑和日志里用了 ——
+     * 但**不再有独立配置项**，避免出现"两个下限打架"。
+     */
+    this.sleepMin = this.sleepShortMin
     /** 连续安静几次后不再给这个选项（0 = 不限） */
     const maxCons = Number(sl.maxConsecutive)
     this.maxConsecutiveSleep = Number.isFinite(maxCons) && maxCons >= 0 ? Math.round(maxCons) : 2

@@ -752,13 +752,28 @@ export function renderPrompt(
      *   这一句插不上     → SILENT
      *   接下来都插不上   → SLEEP
      */
+    /**
+     * **数字写进提示词。**
+     *
+     * 我一度把上下限从 prompt 里删掉，理由是"那是代码 clamp 用的，模型不需要知道"。
+     * 但那样它只能按提示里的例子瞎写 —— 写 600 被压到 300，下次还是写 600，
+     * **而且不知道为什么**。给出范围它才能一次写对。
+     *
+     * 三档说清：
+     *   `[[SILENT]]`  一句
+     *   `[[SLEEP]]`   不写数字 → `shortMin~shortMax` 随机（一般用这个）
+     *   `[[SLEEP:N]]` 自己写 → 夹到 `shortMin~max`
+     */
+    const lo = Number(sleep.shortMin) > 0 ? Number(sleep.shortMin) : 45
+    const hi = Number(sleep.shortMax) >= lo ? Number(sleep.shortMax) : lo + 30
+    const cap = Number(sleep.max) >= hi ? Number(sleep.max) : Math.max(hi, 600)
     parts.push(
       '**不想接的时候，两个出口，区别只在"多久"：**\n' +
         '- `[[SILENT]]`：**只跳过这一句**。下一句还会照常问你 —— ' +
         '适合"这句插不上嘴，但后面可能想聊"。\n' +
-        '- `[[SLEEP]]`：**接下来这一阵子都不叫你**，到点再问一次。' +
-        '觉得群里这会儿在聊的事你插不上话，就用它。\n' +
-        '  想安静得久一点可以写秒数（`[[SLEEP:300]]`），不写就按默认的一小会儿。\n' +
+        '- `[[SLEEP]]`：**接下来这一阵子都不叫你**，到点再问一次。\n' +
+        `  不写秒数就是 ${lo}~${hi} 秒之间随机，一般这样就够了。\n` +
+        `  想安静久一点可以自己写，范围 ${lo}~${cap} 秒（\`[[SLEEP:${cap}]]\` 是上限）。\n` +
         '换句话说：**这一句不接用 SILENT，这一阵子都插不上用 SLEEP。**\n' +
         '**别连着睡**：连续几次之后这个选项就没了 —— 那时候说明该说点什么了，而不是继续躲。',
     )
