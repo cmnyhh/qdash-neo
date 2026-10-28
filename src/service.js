@@ -3224,12 +3224,14 @@ export class QdashNeoService {
        */
       await this.router?.release?.(chatKey)
       const removed = SessionRouter.removeStoredSession(sessionId, { log: this.log })
-      this.log(
-        'warn',
-        `qdash-neo: ${chatKey} 重建会话（${why || '手动'}）删除了 ${removed.length} 个目录`,
+      // 用 console.log：`this.log('warn')` 在 DSH 里看不到 ——
+      // 而"到底删没删、删了几个"是验证重建是否真生效的唯一证据
+      console.log(
+        `qdash-neo: ${chatKey} 重建会话（${why || '手动'}）sessionId=${sessionId} 删除了 ${removed.length} 个目录` +
+          (removed.length ? `\n  ${removed.join('\n  ')}` : ' ← 一个都没删到！'),
       )
     } catch (err) {
-      this.log('warn', `qdash-neo: ${chatKey} 重建会话失败 msg=${err?.message}`)
+      console.log(`qdash-neo: ${chatKey} 重建会话失败 msg=${err?.message}`)
     }
   }
 
@@ -3437,22 +3439,35 @@ export class QdashNeoService {
      * 打上 `pendingRebuild` 标记 —— 那时上一轮肯定结束了。
      */
     /**
-     * **打一次原始结构**：确认 `usage` 里哪个字段才是"会话总量"。
+     * **用 `totalTokens` 判断，不是 `inputTokens`。**
      *
-     * 已知 `usage.inputTokens` 只有几千（218/5867/…），而 DSH 界面显示
-     * 会话已用 449K —— 说明 `inputTokens` 是**本轮增量**，不是累计。
-     * 先看清有哪些字段，再决定用哪个判断重建。
+     * 实测一轮的原始结构：
+     *
+     *     { inputTokens: 5463,        ← **本轮新增**（几 KB），不是累计
+     *       outputTokens: 111,
+     *       cacheReadTokens: 368896,  ← 历史里缓存命中的部分
+     *       totalTokens: 374470 }     ← **真正的上下文总量**
+     *
+     * `5463 + 368896 + 111 = 374470` —— 三者相加才是总量。
+     *
+     * 只看 `inputTokens` 会一直几千，永远到不了阈值；
+     * 而 DSH 界面显示的 449K 正是 `totalTokens` 那个量级。
+     *
+     * 兜底：老 provider 可能不报 `totalTokens`，那就自己加。
      */
-    if (!this.usageLogged) {
-      this.usageLogged = true
-      console.log(`qdash-neo: usage 原始结构 ${JSON.stringify(usage)}`)
-    }
-
-    const input = Number(usage?.inputTokens ?? 0)
-    if (input > 0 && input >= this.maxHistoryTokens) {
-      this.pendingRebuild.set(chatKey, `上下文 ${Math.round(input / 1000)}k tokens`)
+    const total =
+      Number(usage?.totalTokens ?? 0) ||
+      Number(usage?.inputTokens ?? 0) +
+        Number(usage?.cacheReadTokens ?? 0) +
+        Number(usage?.outputTokens ?? 0)
+    if (total > 0 && total >= this.maxHistoryTokens) {
+      this.pendingRebuild.set(chatKey, `上下文 ${Math.round(total / 1000)}k tokens`)
       this.turnCount.set(chatKey, 0)
-      this.log('warn', `qdash-neo: ${chatKey} 上下文已达 ${input} tokens，下一轮前重建`)
+      // 用 console.log：`this.log('warn')` 在 DSH 里同样看不到（和 info 一样），
+      // 而"到底有没有触发重建"必须能当场看见
+      console.log(
+        `qdash-neo: ${chatKey} 上下文已达 ${total} tokens（阈值 ${this.maxHistoryTokens}），下一轮前重建`,
+      )
     }
   }
 
@@ -3567,6 +3582,10 @@ export class QdashNeoService {
      */
     const hist = Number(next.agent?.maxHistoryTokens ?? next.agent?.maxHistoryChars)
     this.maxHistoryTokens = Number.isFinite(hist) && hist > 0 ? Math.round(hist) : 130_000
+    console.log(
+      `qdash-neo: 重建阈值 ${this.maxHistoryTokens} tokens` +
+        `（读到 agent.maxHistoryChars=${JSON.stringify(next.agent?.maxHistoryChars)}）`,
+    )
 
     /**
      * 空闲静默的启停。

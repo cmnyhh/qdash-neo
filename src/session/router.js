@@ -64,7 +64,20 @@ export class SessionRouter {
   static encodeSessionId(sessionId) {
     return String(sessionId ?? '').replace(
       /[^A-Za-z0-9._-]/g,
-      c => `~${c.charCodeAt(0).toString(16).padStart(4, '0')}`,
+      /**
+       * **十六进制必须大写。**
+       *
+       * DSH 生成的目录名是 `qq~003Ag~003A1129813323`（**大写 A**），
+       * 而 `toString(16)` 给的是小写 —— Linux 文件系统区分大小写，于是
+       * 路径永远对不上，`existsSync` 恒为 false。
+       *
+       * 后果：`rebuildSession` 每次"成功"地删了 **0 个目录**，
+       * 会话历史一点没少，上下文一路涨到 `prompt is too long: 1061352 tokens`。
+       * 而日志写的是"重建会话（xxx）删除了 0 个目录"—— **0 这个数字太容易被略过**。
+       *
+       * 这是"重建一直是假的"的第二个原因（第一个是写死 `homedir()`）。
+       */
+      c => `~${c.charCodeAt(0).toString(16).padStart(4, '0').toUpperCase()}`,
     )
   }
 
