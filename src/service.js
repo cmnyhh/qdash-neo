@@ -3584,7 +3584,7 @@ export class QdashNeoService {
     this.maxHistoryTokens = Number.isFinite(hist) && hist > 0 ? Math.round(hist) : 130_000
     console.log(
       `qdash-neo: 重建阈值 ${this.maxHistoryTokens} tokens` +
-        `（读到 agent.maxHistoryChars=${JSON.stringify(next.agent?.maxHistoryChars)}）`,
+        `（读到 agent.maxHistoryTokens=${JSON.stringify(next.agent?.maxHistoryTokens)}）`,
     )
 
     /**

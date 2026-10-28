@@ -81,23 +81,12 @@ export function normalizeEvent(raw, { selfId = '' } = {}) {
   const segments = toSegments(raw.message)
 
   /**
-   * **临时诊断：把卡片段的原始结构打出来。**
+   * 卡片段（`ark` / `json`）在入站侧**保留在 `segments` 里，但不拼进 `text`。**
    *
-   * 背景：QQ 的分享卡片在 OneBot 里是 `ark` 或 `json` 段，而我们的 `text`
-   * 只拼 `text` 段，所以卡片内容一直被丢掉 —— 既不能读，也无从知道
-   * B 站官方卡片长什么样。
-   *
-   * 这里把原始 JSON 原样落地，用于逆向它的 `app` / `view` / `meta` 结构。
-   * **确认结构后就删掉**，别留在生产路径上。
+   * 曾经加过一段临时诊断把原始 JSON 打出来，用于逆向 B 站卡片结构。
+   * 结论已经拿到（`com.tencent.miniapp_01` + `appid=1109937557` + `scene`），
+   * 那段诊断也删了 —— 别留在生产路径上刷日志。
    */
-  const cardSegs = segments.filter(s => s && (s.type === 'ark' || s.type === 'json'))
-  if (cardSegs.length) {
-    console.log(
-      `qdash-neo: [卡片段] 类型=${cardSegs.map(s => s.type).join('+')} ` +
-        `原始内容=${JSON.stringify(cardSegs).slice(0, 5000)}`,
-    )
-  }
-
   const text = segments
     .filter(s => s && s.type === 'text')
     .map(s => s.data?.text ?? '')
