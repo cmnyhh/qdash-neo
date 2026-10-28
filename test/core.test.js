@@ -793,6 +793,97 @@ test('提示词：图片只渲染 [图片]，不带 id（读图走 latest）', (
   assert.match(p, /\[图片\]/, '至少要说清这里有张图')
 })
 
+/* ---------------- 私聊：和群聊同一套渲染 ---------------- */
+
+test('私聊：单条也带【本次消息】和 [#id]（此前是裸正文）', () => {
+  const ev = normalizeEvent({
+    post_type: 'message',
+    message_type: 'private',
+    self_id: '999',
+    user_id: 1704,
+    message_id: 300,
+    message: [{ type: 'text', data: { text: '可爱捏' } }],
+    time: Math.floor(Date.now() / 1000),
+    sender: { user_id: 1704, card: '草莓' },
+  })
+  const p = renderPrompt(ev, { botName: '白绫', batch: [ev] })
+
+  assert.match(p, /【本次消息｜对方说】/, '单条也要有段标题')
+  assert.match(p, /\[#300\]/, '要带消息 id（和群聊一致）')
+  assert.match(p, /草莓\(1704\)/, '要带发送者')
+  assert.match(p, /：可爱捏$|：可爱捏\r?$/m, '正文跟在冒号后面')
+})
+
+test('私聊：引用回复要渲染出「回复谁的哪句」', () => {
+  const ev = normalizeEvent({
+    post_type: 'message',
+    message_type: 'private',
+    self_id: '999',
+    user_id: 1704,
+    message_id: 301,
+    message: [{ type: 'reply', data: { id: '100' } }, { type: 'text', data: { text: '可爱' } }],
+    time: Math.floor(Date.now() / 1000),
+    sender: { user_id: 1704, card: '草莓' },
+  })
+  // service 层查出来的原文与发送者
+  ev.replyText = '[图片 白色小猫戴军帽]'
+  ev.replyFrom = '白绫'
+
+  const p = renderPrompt(ev, { botName: '白绫', batch: [ev] })
+  /**
+   * 早先私聊绕过了 `one()`，这句完全不渲染 —— 用户只看到「可爱」，
+   * 模型不知道在夸哪张图。
+   */
+  assert.match(p, /（回复白绫的「\[图片 白色小猫戴军帽\]」）/)
+})
+
+test('私聊：多条合批成一个标题，每条都带 id', () => {
+  const mk = (id, text) =>
+    normalizeEvent({
+      post_type: 'message',
+      message_type: 'private',
+      self_id: '999',
+      user_id: 1704,
+      message_id: id,
+      message: [{ type: 'text', data: { text } }],
+      time: Math.floor(Date.now() / 1000),
+      sender: { user_id: 1704, card: '草莓' },
+    })
+  const batch = [mk(310, '在吗'), mk(311, '问你个事'), mk(312, '就是那个')]
+  const p = renderPrompt(batch.at(-1), { botName: '白绫', batch })
+
+  assert.match(p, /【本次消息｜对方连着发了这 3 条/)
+  assert.equal((p.match(/\[#31\d\]/g) ?? []).length, 3, '三条都要带 id')
+})
+
+test('私聊：有 context 时渲染「最近对话」段（图片描述靠它读出来）', () => {
+  const ev = normalizeEvent({
+    post_type: 'message',
+    message_type: 'private',
+    self_id: '999',
+    user_id: 1704,
+    message_id: 320,
+    message: [{ type: 'text', data: { text: '嗯' } }],
+    time: Math.floor(Date.now() / 1000),
+    sender: { user_id: 1704, card: '草莓' },
+  })
+  const context = [
+    { userId: '1704', senderName: '草莓', text: '[图片 白色小猫戴军帽]', direction: 'in', ts: Date.now() - 60_000 },
+    { userId: 'self', senderName: '白绫', text: '这张不错', direction: 'out', ts: Date.now() - 30_000 },
+  ]
+  const p = renderPrompt(ev, { botName: '白绫', batch: [ev], context })
+
+  assert.match(p, /【最近对话｜对方之前跟你说的】/, '私聊也要有历史段，标题用私聊说法')
+  assert.match(p, /\[图片 白色小猫戴军帽\]/, '历史里的图片描述要能读出来')
+  /**
+   * 自己说过的话也在里面 —— 渲染成「你」，不是机器人名。
+   *
+   * `renderContextBlock` 对 `direction === 'out'` 用第一人称「你」，
+   * 这样模型读起来是"我说过"，而不是"另一个叫白绫的人说过"。
+   */
+  assert.match(p, /你：这张不错/, '出站消息用「你」渲染')
+})
+
 test('读图工具：file=latest 时用会话最近一张图兜底', async () => {
   const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4])
   const asked = []

@@ -1829,6 +1829,22 @@ export class QdashNeoService {
     }
     if (ev.imageFile) this.lastImage.set(ev.chatKey, ev.imageFile)
 
+    /**
+     * **私聊也写上下文缓冲 —— 这是"群聊私聊一致"的第一块拼图。**
+     *
+     * 群聊的 `prepareGroupInbound` 一直有这个调用，私聊漏了。后果是
+     * 私聊的 prompt 里**永远没有「最近对话」段**：
+     *
+     *   - 模型看不到前几轮自己说过什么（只靠 DSH 会话本身）
+     *   - 图片描述写进了 `messages.text`，但私聊没人读那张表 —— 于是
+     *     历史里的图永远是 `[图片]`
+     *   - 引用回复的原文查得到、却渲染不出来（渲染在 `one()` 里，
+     *     而私聊分支根本没有")
+     *
+     * 缓冲本身有上限（`perChatCap=80`），不会有内存风险。
+     */
+    this.rememberContext(ev)
+
     if (this.batchWindowMs > 0) {
       this.enqueueBatch(ev)
       return 'drop'
@@ -2804,7 +2820,8 @@ export class QdashNeoService {
        * **注意这里渲染的字符串只给判定器用** —— 模型那一侧的 prompt 由
        * `renderPrompt` 自己拿 `lines` 重渲染，所以那边也必须传
        * `contextImageDesc`，否则这条替换等于白做（踩过，见 normalize.js 的说明）。
-       */
+       */
+
     })
 
     return { text: rendered, lines, partial }
@@ -3009,7 +3026,17 @@ export class QdashNeoService {
       this.log('error', `qdash-neo: 会话落库失败 ${chatKey} name=${err?.name} msg=${err?.message}`, err)
     }
 
-    const ctxLines = ctx ?? (isGroup ? this.contextText(chatKey, ev.messageId) : { lines: [], partial: false })
+    /**
+     * **私聊也取「最近对话」。**
+     *
+     * 原来私聊直接给 `{ lines: [], partial: false }` —— 一条历史都不带。
+     * 后果是：模型看不到前几轮自己说过什么；图片描述写进了 `messages.text`
+     * 却没人读；引用回复的原文查得到、渲染不出来（渲染在 `one()` 里）。
+     *
+     * 现在私聊也会 `rememberContext`（`preparePrivateInbound` 补上了），
+     * 缓冲里有内容，这里直接取。
+     */
+    const ctxLines = ctx ?? this.contextText(chatKey, ev.messageId)
     /**
      * 记忆注入**对私聊也生效**。
      *
@@ -3035,7 +3062,8 @@ export class QdashNeoService {
          * 这段和「群聊记录」是拼起来用的，替换逻辑必须一致 ——
          * 否则同一张图在前一段有描述、后一段只有 `[图片]`，
          * 模型会以为那是两张不同的图。
-         */
+         */
+
       }) ?? ''
     /**
      * 记忆注入的**可见证据**。
@@ -3097,12 +3125,28 @@ export class QdashNeoService {
       // 只传人格卡里的别名：登录昵称往往是 QQ 号，那是 ID 不是"叫法"，
       // 写成"也有人叫你「3216839364」"看着很怪，对判断也没帮助。
       botAliases: this.personaOf()?.aliases() ?? [],
-      context: isGroup ? ctxLines.lines : null,
+      /**
+       * **私聊也要「最近对话」段。**
+       *
+       * 原来写的是 `isGroup ? ctxLines.lines : null` —— 私聊永远拿不到历史，
+       * 于是三件事同时坏掉：
+       *
+       *   - 看不到前几轮自己说过什么
+       *   - 图片描述写进了 `messages.text`，但没人读
+       *   - 引用回复的原文查得到、渲染不出来（渲染在群聊的 `one()` 里）
+       *
+       * 现在私聊也写缓冲（`preparePrivateInbound` 补了 `rememberContext`），
+       * 这里就按"有没有内容"决定，不再看群聊私聊。
+       *
+       * 长度由 `contextMaxChars`（默认 3000）和 `contextLines`（默认 20）兜住。
+       */
+      context: ctxLines.lines.length ? ctxLines.lines : null,
       /**
        * **必须一起传**：`renderPrompt` 内部会用 `lines` 重新渲染一遍，
        * 不传这个的话历史图片全部退化成 `[图片]` —— 而 `ctxLines.text`
        * 那份（带描述的）只给判定器用，进不了 prompt。
-       */
+       */
+
       partial: ctxLines.partial,
       // 私聊也会攒批（`preparePrivateInbound`），所以不能按 isGroup 置空
       batch,

@@ -189,6 +189,112 @@ export function imageTag() {
 }
 
 /**
+ * **渲染单条消息 —— 群聊私聊共用。**
+ *
+ * 之前它是 `renderPrompt` 里的 `const one`，位置在私聊分支**之后** ——
+ * 私聊调不到（`const` 不提升），于是私聊自己拼了一段裸正文：
+ * 没有 `[#id]`、没有引用回复、没有 `【本次消息】` 标记。
+ *
+ * 提到模块级之后两个分支走同一套渲染。它只依赖 `it` 自身字段；
+ * 原先依赖的 `currentImageText` 现在是恒等函数，直接内联成 `String()`。
+ */
+export function renderOneLine(it) {
+  const who = it.senderName ? `${it.senderName}(${it.userId})` : it.userId
+  /**
+   * **@ 别人时必须说清"不是叫你"。**
+   *
+   * 早先只有 `it.atMe ? '（@你）' : ''` 一个分支，于是"A @ B 说「你昨天那个方案」"
+   * 渲染成 `A：你昨天那个方案` —— 模型看不到 @ 的是谁，**以为在问自己**，
+   * 于是抢答了本该 B 回答的问题。这是实测高频的误判。
+   *
+   * 现在三种情况分开写，重点是最后一种要**显式排除**：
+   *
+   *   @你              → （@你）
+   *   @你，也@了别人    → （@你，也在叫别人）
+   *   @了别人          → （@别人，不是在叫你）   ← 防止抢答
+   */
+  const others = Array.isArray(it.atTargets) ? it.atTargets : []
+  const atNames = others.map(q => `@${q}`).join(' ')
+  const hasText = Boolean(String(it.text ?? '').trim())
+  /**
+   * 纯 @（没正文）要说清"**没说话**"。
+   *
+   * 否则渲染成 `甲(2)（@888，不是在叫你）`，模型会把它读成"一条空消息"——
+   * 实测它的原话就是 `Empty message addressed to someone else. Silent.`
+   * 行为没错（确实不该接），但**把纯 @ 误判成空**，容易在下一次类似场景里
+   * 继续用"空"来解释，而实际语义是"有人叫了别人但没说事"。
+   */
+  const at = it.atMe
+    ? others.length
+      ? `（@你，也在叫 ${atNames}）`
+      : '（@你）'
+    : others.length
+      ? hasText
+        ? `（${atNames}，不是在叫你）`
+        : `（只 @ 了 ${others.join(' ')}，没说话，不是在叫你）`
+      : ''
+  /**
+   * **`[图片:X.jpg]` 必须换成描述，这里也算一个入口。**
+   *
+   * 前四个入口分别是：群聊记录、最近对话、`renderPrompt` 二次渲染、私聊正文。
+   * 这是第五个 —— **当前消息本身**。它不走 `renderContextBlock`，
+   * 所以那边的 `imageDesc` 管不到，模型直接看到 `[图片:XYZ.jpg]`。
+   *
+   * **但降级规则和历史相反**：历史里没描述就降级成 `[图片]`（不带 id，
+   * 免得模型去重读旧图、白烧视觉 token）；**当前消息没描述必须留着 id**，
+   * 模型要靠它指定 `qq_get_image({ file })` 读哪一张。
+   */
+  const rawText = String(it.text || (it.hasImage ? imageTag(it) : '')).replace(/\s*\n\s*/g, ' ⏎ ')
+  const text = String(rawText)
+  /**
+   * 群聊里带消息 ID，模型可以用 `qq_send_message({ reply_to })` 指定回哪一条。
+   *
+   * **只在群聊加**：私聊里对方知道你在回他，引用块纯属噪音；
+   * 而群里同时好几条在滚，不引用根本看不出在回谁。
+   *
+   * 用真实 ID 而不是批内序号：少一层「序号 → ID」的映射，工具参数直接就是
+   * OneBot 认的值。代价是模型可能抄错几位 —— 所以工具那边会校验，
+   * 不在本批里的 ID 直接报错并列出可用的，而不是发一条引用到不存在消息上的消息。
+   */
+  const id = String(it.messageId ?? '').trim()
+  /**
+   * **纯 @ 消息没有正文**（`segs=[at]`，`text` 为空）。
+   *
+   * 那种消息现在能通过 `ingest`（不再被当空消息丢掉），但如果照旧拼
+   * `：${text}`，就会得到 `甲(888)（@888，不是在叫你）：` 后面空着 ——
+   * 看着像被截断。没正文就把冒号一起去掉，`@` 标记本身已经说明了全部内容。
+   */
+  /**
+   * **引用回复要说清"在回哪句"。**
+   *
+   * 用户长按一条消息回复，`reply` 段里带着那条的 id。不渲染的话，
+   * 这条在 prompt 里和普通发言完全一样 —— 模型不知道他在针对什么，
+   * 尤其当被回复的是**一张图**时（正文只有"可爱捏"，指代完全丢失）。
+   *
+   * `replyText` 是 service 层按 id 查出来的原文；查不到就退化成
+   * "回复了一条消息"，至少让模型知道这是个回复。
+   */
+  // 回复里也可能是一张图（`[图片:X.jpg]`），同样要换成描述再截断
+  const replyText = String(String(it.replyText ?? '').trim())
+  const replyFrom = String(it.replyFrom ?? '').trim()
+  /**
+   * **带上发送者。**
+   *
+   * 只说「回复「那张图」」不够 —— 群里好几个人都发过图，
+   * 模型分不清在应谁的。`（回复 白绫 的「…」）` 才闭合。
+   */
+  const reply = it.replyTo
+    ? replyText
+      ? `（回复${replyFrom ? `${replyFrom}的` : ''}「${
+          replyText.length > 24 ? `${replyText.slice(0, 24)}…` : replyText
+        }」）`
+      : `（回复了${replyFrom ? `${replyFrom}的` : '一条'}消息）`
+    : ''
+  const head = id ? `[#${id}] ${who}${at}${reply}` : `${who}${at}${reply}`
+  return text ? `${head}：${text}` : head
+}
+
+/**
  * 把入站消息变成喂给 agent 的纯文本。
  * 群里带上发送者信息：模型没有 QQ 侧的上下文，不给它，它不知道在跟谁说话。
  *
@@ -511,12 +617,23 @@ export function renderPrompt(
      * 合成一段交出去，让它回一条，而不是三条。
      */
     const plines = Array.isArray(batch) && batch.length ? batch : [ev]
-    const pbodyRaw =
+    /**
+     * **和群聊同一套渲染。**
+     *
+     * 早先单条直接拼 `body`（裸正文）—— 于是私聊的 prompt 里：
+     *
+     *   - 没有 `【本次消息】` 标记（群聊有，一眼能看出"这段是刚来的"）
+     *   - 没有 `[#id]` 前缀
+     *   - **引用回复完全不显示**（`（回复白绫的「…」）` 是在 `renderOneLine` 里拼的，
+     *     而私聊绕过了它）
+     *
+     * 现在统一走 `renderOneLine`，只有标题不同。
+     */
+    const phead =
       plines.length > 1
-        ? `【本次消息｜对方连着发了这 ${plines.length} 条，当成一口气说的话回应】\n${plines
-            .map(it => String(it.text || (it.hasImage ? imageTag(it) : '')).replace(/\s*\n\s*/g, ' ⏎ '))
-            .join('\n')}`
-        : body
+        ? `【本次消息｜对方连着发了这 ${plines.length} 条，当成一口气说的话回应】`
+        : '【本次消息｜对方说】'
+    const pbodyRaw = [phead, plines.map(renderOneLine).join('\n')].join('\n')
     /**
      * **私聊这条路径漏了图片替换 —— 同一类 bug 的第四次。**
      *
@@ -564,6 +681,18 @@ export function renderPrompt(
       pluginRules,
       persona ? `【你的角色设定｜这是你本人，不是对方说的话】\n${persona}` : '',
       memory ? `【长期记忆｜你记得的事，不是对方刚说的】\n${memory}` : '',
+      /**
+       * **私聊也要「最近对话」。**
+       *
+       * 早先私聊不给历史段 —— 模型只能靠 DSH 会话本身记得刚才说过什么，
+       * 而**图片描述写的是 `messages.text`**（群聊靠这段读出来），
+       * 私聊没这段就等于那张表白写。
+       *
+       * 同一个 `renderContextBlock`，只是标题换成私聊的说法。
+       */
+      context && context.length
+        ? renderContextBlock(context, { partial, label: '【最近对话｜对方之前跟你说的】' })
+        : '',
       SEND_HINT,
       canSpeak ? speakHint() : '',
       pbody,
@@ -583,101 +712,6 @@ export function renderPrompt(
   // 批窗口攒起来的多条要当"一口气说的几句话"交给模型，让出一条自然回复，而不是逐条答
   const lines = Array.isArray(batch) && batch.length ? batch : [ev]
   const multi = lines.length > 1
-  const one = it => {
-    const who = it.senderName ? `${it.senderName}(${it.userId})` : it.userId
-    /**
-     * **@ 别人时必须说清"不是叫你"。**
-     *
-     * 早先只有 `it.atMe ? '（@你）' : ''` 一个分支，于是"A @ B 说「你昨天那个方案」"
-     * 渲染成 `A：你昨天那个方案` —— 模型看不到 @ 的是谁，**以为在问自己**，
-     * 于是抢答了本该 B 回答的问题。这是实测高频的误判。
-     *
-     * 现在三种情况分开写，重点是最后一种要**显式排除**：
-     *
-     *   @你              → （@你）
-     *   @你，也@了别人    → （@你，也在叫别人）
-     *   @了别人          → （@别人，不是在叫你）   ← 防止抢答
-     */
-    const others = Array.isArray(it.atTargets) ? it.atTargets : []
-    const atNames = others.map(q => `@${q}`).join(' ')
-    const hasText = Boolean(String(it.text ?? '').trim())
-    /**
-     * 纯 @（没正文）要说清"**没说话**"。
-     *
-     * 否则渲染成 `甲(2)（@888，不是在叫你）`，模型会把它读成"一条空消息"——
-     * 实测它的原话就是 `Empty message addressed to someone else. Silent.`
-     * 行为没错（确实不该接），但**把纯 @ 误判成空**，容易在下一次类似场景里
-     * 继续用"空"来解释，而实际语义是"有人叫了别人但没说事"。
-     */
-    const at = it.atMe
-      ? others.length
-        ? `（@你，也在叫 ${atNames}）`
-        : '（@你）'
-      : others.length
-        ? hasText
-          ? `（${atNames}，不是在叫你）`
-          : `（只 @ 了 ${others.join(' ')}，没说话，不是在叫你）`
-        : ''
-    /**
-     * **`[图片:X.jpg]` 必须换成描述，这里也算一个入口。**
-     *
-     * 前四个入口分别是：群聊记录、最近对话、`renderPrompt` 二次渲染、私聊正文。
-     * 这是第五个 —— **当前消息本身**。它不走 `renderContextBlock`，
-     * 所以那边的 `imageDesc` 管不到，模型直接看到 `[图片:XYZ.jpg]`。
-     *
-     * **但降级规则和历史相反**：历史里没描述就降级成 `[图片]`（不带 id，
-     * 免得模型去重读旧图、白烧视觉 token）；**当前消息没描述必须留着 id**，
-     * 模型要靠它指定 `qq_get_image({ file })` 读哪一张。
-     */
-    const rawText = String(it.text || (it.hasImage ? imageTag(it) : '')).replace(/\s*\n\s*/g, ' ⏎ ')
-    const text = currentImageText(rawText)
-    /**
-     * 群聊里带消息 ID，模型可以用 `qq_send_message({ reply_to })` 指定回哪一条。
-     *
-     * **只在群聊加**：私聊里对方知道你在回他，引用块纯属噪音；
-     * 而群里同时好几条在滚，不引用根本看不出在回谁。
-     *
-     * 用真实 ID 而不是批内序号：少一层「序号 → ID」的映射，工具参数直接就是
-     * OneBot 认的值。代价是模型可能抄错几位 —— 所以工具那边会校验，
-     * 不在本批里的 ID 直接报错并列出可用的，而不是发一条引用到不存在消息上的消息。
-     */
-    const id = String(it.messageId ?? '').trim()
-    /**
-     * **纯 @ 消息没有正文**（`segs=[at]`，`text` 为空）。
-     *
-     * 那种消息现在能通过 `ingest`（不再被当空消息丢掉），但如果照旧拼
-     * `：${text}`，就会得到 `甲(888)（@888，不是在叫你）：` 后面空着 ——
-     * 看着像被截断。没正文就把冒号一起去掉，`@` 标记本身已经说明了全部内容。
-     */
-    /**
-     * **引用回复要说清"在回哪句"。**
-     *
-     * 用户长按一条消息回复，`reply` 段里带着那条的 id。不渲染的话，
-     * 这条在 prompt 里和普通发言完全一样 —— 模型不知道他在针对什么，
-     * 尤其当被回复的是**一张图**时（正文只有"可爱捏"，指代完全丢失）。
-     *
-     * `replyText` 是 service 层按 id 查出来的原文；查不到就退化成
-     * "回复了一条消息"，至少让模型知道这是个回复。
-     */
-    // 回复里也可能是一张图（`[图片:X.jpg]`），同样要换成描述再截断
-    const replyText = currentImageText(String(it.replyText ?? '').trim())
-    const replyFrom = String(it.replyFrom ?? '').trim()
-    /**
-     * **带上发送者。**
-     *
-     * 只说「回复「那张图」」不够 —— 群里好几个人都发过图，
-     * 模型分不清在应谁的。`（回复 白绫 的「…」）` 才闭合。
-     */
-    const reply = it.replyTo
-      ? replyText
-        ? `（回复${replyFrom ? `${replyFrom}的` : ''}「${
-            replyText.length > 24 ? `${replyText.slice(0, 24)}…` : replyText
-          }」）`
-        : `（回复了${replyFrom ? `${replyFrom}的` : '一条'}消息）`
-      : ''
-    const head = id ? `[#${id}] ${who}${at}${reply}` : `${who}${at}${reply}`
-    return text ? `${head}：${text}` : head
-  }
   /**
    * 标题要跟「有没有人叫它」走。
    *
@@ -696,7 +730,7 @@ export function renderPrompt(
     : anyAt
       ? '【当前消息｜@你的，请回应】'
       : '【当前消息｜群里在说话】'
-  const current = lines.map(one).join('\n')
+  const current = lines.map(renderOneLine).join('\n')
   /**
    * **别名也要告诉它 —— 不然有人叫别名，它不知道那是在叫自己。**
    *

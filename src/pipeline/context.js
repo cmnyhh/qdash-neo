@@ -261,6 +261,13 @@ export function renderContextBlock(
      * @type {(file: string) => string|undefined}
      */
     imageDesc = null,
+    /**
+     * **段标题。** 不传就用群聊那句（`UNTRUSTED_HEADER`）。
+     *
+     * 私聊传 `【最近对话｜对方之前跟你说的】` —— 同一个渲染函数、同一套
+     * 截断与图片规则，**只有标题不同**。这样群聊私聊不会长出两套逻辑。
+     */
+    label = '',
   } = {},
 ) {
   if (!lines || lines.length === 0) return ''
@@ -344,5 +351,5 @@ export function renderContextBlock(
     return `${hhmm ? `${hhmm} ` : ''}${who}：${text}${at}${stale}`
   })
   const tail = partial ? '\n（更早的消息因长度限制未展示）' : ''
-  return `${UNTRUSTED_HEADER}\n${body.join('\n')}${tail}`
+  return `${label || UNTRUSTED_HEADER}\n${body.join('\n')}${tail}`
 }
