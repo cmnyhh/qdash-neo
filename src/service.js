@@ -757,6 +757,11 @@ export class QdashNeoService {
       log: this.log,
       // 重启恢复时用**当前**白名单重算 trusted：白名单来自配置，不是运行时快照
       isTrusted: userId => this.gates.allowAll || this.gates.whitelist.has(String(userId)),
+      /**
+       * **缓冲入口就查描述**，渲染层因此不需要任何替换。
+       * 查的是 `image:desc:<file>`，同步 kv 读取，不调模型。
+       */
+      resolveImage: f => this.imageDescOf(f),
     })
     this.judge = new JudgeChain(this.ctx, {
       config: this.config,
@@ -1482,6 +1487,13 @@ export class QdashNeoService {
            * 一句话，失败就当没有。
            */
           describeImage: ref => this.describeImageOf(ref),
+      /**
+       * `image_mark` 写完 kv 后回调这里 —— **原子地补齐另外两处**。
+       *
+       * 不补的话：kv 有描述、`messages.text` 和内存缓冲还是 `[图片]`，
+       * 于是渲染层又得靠字符串替换兜底（6 处，已漏过 6 次）。
+       */
+      onImageMarked: (file, desc) => this.applyImageDesc(chatKey, file, desc),
           /**
            * 发分享卡片（`qq_send_card` 工具用）。
            *
@@ -1794,8 +1806,17 @@ export class QdashNeoService {
       direction: 'in',
       senderId: ev.userId,
       senderName: ev.senderName ?? '',
-      // 纯图消息的 ev.text 是空串 —— 存 [图片:file] 才不会在落库时丢掉图片
+      /**
+       * **带图的入站落 `[图片]` + `image_file` 列。**
+       *
+       * 早先存 `[图片:X.jpg]` 是为了让渲染层能凭 id 换描述 —— 但那要靠
+       * 6 处替换点去补，漏一次就退化成看不懂的占位。
+       *
+       * 现在 id 单独存列（给 `image_mark` 定位用），`text` 保持干净：
+       * 有描述时由 `image_mark` 改写成 `[图片 橘猫托着下巴]`。
+       */
       text: ev.text || (ev.hasImage ? imageTag(ev) : ''),
+      imageFile: ev.hasImage ? String(ev.imageFile ?? '') : '',
       ts: ev.ts,
       state: 'delivered',
       atMe: ev.atMe ? 1 : 0,
@@ -1846,7 +1867,9 @@ export class QdashNeoService {
       direction: 'in',
       senderId: ev.userId,
       senderName: ev.senderName ?? '',
+      // 同 `handleInbound`：text 保持 `[图片]`，id 单独进 image_file 列
       text: ev.text || (ev.hasImage ? imageTag(ev) : ''),
+      imageFile: ev.hasImage ? String(ev.imageFile ?? '') : '',
       ts: ev.ts,
       state: 'context',
       atMe: ev.atMe ? 1 : 0,
@@ -2712,10 +2735,11 @@ export class QdashNeoService {
       /**
        * **纯图消息的 `ev.text` 是空串**（它只拼文字段）。
        *
-       * 早先这里写 `'[图片]'`，没有 id —— 历史渲染时既查不到描述，
-       * 也无法回看。现在带 id，渲染那一层才能把它换成描述。
+       * 这里只放 `[图片]` 占位；`imageFile` 单独带下去，
+       * `GroupContext.append` 会用它现查描述，直接写成 `[图片 橘猫托着下巴]`。
        */
       text: ev.text || (ev.hasImage ? imageTag(ev) : ''),
+      imageFile: ev.hasImage ? String(ev.imageFile ?? '') : '',
       atMe: ev.atMe,
       /**
        * 也记下 @ 了谁 —— 历史里同样要能看出"那句不是在叫它"。
@@ -2780,8 +2804,7 @@ export class QdashNeoService {
        * **注意这里渲染的字符串只给判定器用** —— 模型那一侧的 prompt 由
        * `renderPrompt` 自己拿 `lines` 重渲染，所以那边也必须传
        * `contextImageDesc`，否则这条替换等于白做（踩过，见 normalize.js 的说明）。
-       */
-      imageDesc: f => this.imageDescOf(f),
+       */
     })
 
     return { text: rendered, lines, partial }
@@ -2820,6 +2843,34 @@ export class QdashNeoService {
    * @param {string} file
    * @returns {string}
    */
+  /**
+   * **`image_mark` 的收尾：把描述同步到聊天记录的两处。**
+   *
+   * 工具层已经写完了 kv（`image:desc:<file>`），这里是剩下两处：
+   *
+   *   ① `messages.text` / `memories.text`（落库，一次事务）
+   *   ② 内存上下文缓冲（这一轮渲染读的就是它）
+   *
+   * **顺序不能反**：先落库再改内存 —— 万一落库失败，内存里也不会
+   * 出现"只有本轮有描述、重启就没了"的假象。
+   *
+   * @param {string} chatKey
+   * @param {string} file 图片 id
+   * @param {string} desc 描述
+   */
+  applyImageDesc(chatKey, file, desc) {
+    try {
+      const n = this.store?.setImageDesc?.(chatKey, file, desc)
+      this.context?.replaceImageDesc?.(chatKey, file, desc)
+      this.log(
+        'debug',
+        `qdash-neo: 图片描述已同步 ${chatKey} file=${String(file).slice(0, 20)} 库内 ${n ?? 0} 条`,
+      )
+    } catch (err) {
+      this.log('warn', `qdash-neo: 同步图片描述失败 ${chatKey} msg=${err?.message}`)
+    }
+  }
+
   imageDescOf(file) {
     const k = String(file ?? '').trim()
     if (!k) return ''
@@ -2984,8 +3035,7 @@ export class QdashNeoService {
          * 这段和「群聊记录」是拼起来用的，替换逻辑必须一致 ——
          * 否则同一张图在前一段有描述、后一段只有 `[图片]`，
          * 模型会以为那是两张不同的图。
-         */
-        imageDesc: f => this.imageDescOf(f),
+         */
       }) ?? ''
     /**
      * 记忆注入的**可见证据**。
@@ -3013,7 +3063,24 @@ export class QdashNeoService {
     for (const it of replyTargets) {
       if (!it?.replyTo) continue
       const hit = this.store?.messageByQqId?.(it.chatKey, it.replyTo)
+      // **诊断**：@ 和引用同时出现时到底差在哪
+      console.log(
+        `qdash-neo: [引用] key=${it.chatKey} atMe=${it.atMe} replyTo=${JSON.stringify(it.replyTo)} ` +
+          `msgId=${it.messageId} 命中=${hit ? `Y(${hit.direction}) ${String(hit.text).slice(0, 16)}` : 'N'}`,
+      )
       it.replyText = String(hit?.text ?? '')
+      /**
+       * **是谁发的。**
+       *
+       * 只说「回复「那张图」」不够 —— 群里好几个人都发过图，
+       * 模型分不清是在应谁的。把发送者带上，指代才闭合。
+       *
+       * 出站消息的 `sender_name` 老数据是空的（那时落库没传），
+       * 所以按 `direction` 兜底成机器人自己。
+       */
+      it.replyFrom =
+        String(hit?.sender_name ?? '').trim() ||
+        (hit?.direction === 'out' ? this.botName() : '')
     }
 
     // 人设不限群：私聊也需要「我是谁」
@@ -3035,8 +3102,7 @@ export class QdashNeoService {
        * **必须一起传**：`renderPrompt` 内部会用 `lines` 重新渲染一遍，
        * 不传这个的话历史图片全部退化成 `[图片]` —— 而 `ctxLines.text`
        * 那份（带描述的）只给判定器用，进不了 prompt。
-       */
-      contextImageDesc: f => this.imageDescOf(f),
+       */
       partial: ctxLines.partial,
       // 私聊也会攒批（`preparePrivateInbound`），所以不能按 isGroup 置空
       batch,
@@ -3284,7 +3350,16 @@ export class QdashNeoService {
          *
          * 必须在 `safeState` 之后做：那一步还在用旧 id。
          */
-        const realId = item.sentResult?.data?.message_id
+        /**
+         * **`call()` 已经把 `payload.data` 解包了**（见 `client.js`：
+         * `waiter.resolve(payload.data)`），所以 `sentResult` 直接就是
+         * `{ message_id }`，**不能再点一层 `.data`** —— 多写那一层的结果是
+         * 永远取到 undefined，`replaceQqMsgId` 一次都没执行过。
+         *
+         * 两种形状都兼容：老实现可能原样返回整个回包。
+         */
+        const r = item.sentResult
+        const realId = r?.data?.message_id ?? r?.message_id
         if (realId != null && item.meta?.qqMsgId) {
           try {
             this.store?.replaceQqMsgId?.(item.chatKey, item.meta.qqMsgId, String(realId))
@@ -3555,7 +3630,21 @@ export class QdashNeoService {
    */
   enqueueOut(chatKey, text, meta = {}) {
     const qqMsgId = meta.qqMsgId ?? `tool:${Date.now()}:${++this.outSeq}`
-    this.safeInsert({ chatKey, qqMsgId, direction: 'out', text, state: 'queued' })
+    /**
+     * **出站也记 senderName。**
+     *
+     * 不加的话，别人回复机器人发的消息时，`messageByQqId` 查回来
+     * `sender_name` 是空 —— prompt 里只能写「回复「那张图」」，
+     * **说不出是谁发的**，而群里好几个人都发过图。
+     */
+    this.safeInsert({
+      chatKey,
+      qqMsgId,
+      direction: 'out',
+      senderName: this.botName(),
+      text,
+      state: 'queued',
+    })
 
     /**
      * 一次回复拆成多片时要**结算**：只有最后一片结算完，才回写一次上下文/记忆。
@@ -3619,7 +3708,15 @@ export class QdashNeoService {
       .filter(Boolean)
       .join('')
     const label = String(meta.text ?? '').trim() || autoLabel || '[非文本消息]'
-    this.safeInsert({ chatKey, qqMsgId, direction: 'out', text: label, state: 'queued' })
+    // 同 `enqueueOut`：出站也记 senderName，别人回复这张图时才知道是谁发的
+    this.safeInsert({
+      chatKey,
+      qqMsgId,
+      direction: 'out',
+      senderName: this.botName(),
+      text: label,
+      state: 'queued',
+    })
     this.outbox?.enqueueSegments(chatKey, segments, { ...meta, qqMsgId, text: label })
   }
 

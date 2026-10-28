@@ -122,6 +122,7 @@ export function normalizeEvent(raw, { selfId = '' } = {}) {
    */
   const replySeg = segments.find(s => s && s.type === 'reply')
   const replyTo = String(replySeg?.data?.id ?? '').trim()
+  // 字段名已验证（协议端用的是标准 OneBot `reply.data.id`），诊断日志已删
 
   const hasImage = segments.some(s => s && s.type === 'image')
   /**
@@ -171,18 +172,20 @@ export function normalizeEvent(raw, { selfId = '' } = {}) {
 }
 
 /**
- * 图片在 prompt 里的写法：有 id 就给 id，没有才留占位。
+ * **图片在 prompt 里只剩 `[图片]` —— 不再带 id。**
  *
- * **只用于"当前消息"**。历史记录里绝不出现 id —— 见
- * `pipeline/context.js` 的 `imageDesc`（那里有性能上的理由）。
+ * 早先是 `[图片:X.jpg]`，因为模型要靠那个 id 调 `qq_get_image({ file })`
+ * 精确指定读哪张。后来确认：**历史图不需要读**（会重烧视觉 token），
+ * **当前图用 `latest` 就够**（`lastImageFile` 兜底，和 text 里的 id 无关）。
  *
- * 导出是因为 service 入库时也要用它：早先入库存的是 `ev.text`，
- * 而纯图消息的 `ev.text` 是空串 —— 于是图片信息在落库那一刻就丢了，
- * 历史里只剩一个无法回看的 `[图片]`。
+ * 所以 id 从文本里退场，改存 `messages.image_file` 列 —— 那是给
+ * `image_mark` 找回"哪条消息该更新"用的，模型看不见也不需要看见。
+ *
+ * 真正的描述由 `image_mark` 写进 `text`（`[图片 橘猫托着下巴]`），
+ * 渲染层不再做任何替换。
  */
-export function imageTag(ev) {
-  const f = String(ev?.imageFile ?? '').trim()
-  return f ? `[图片:${f}]` : '[图片]'
+export function imageTag() {
+  return '[图片]'
 }
 
 /**
@@ -483,11 +486,18 @@ export function renderPrompt(
    *
    * 定义在这个位置：私聊分支（下面）比 `one()` 先用它。
    */
-  const currentImageText = raw =>
-    String(raw ?? '').replace(/\[图片:([^\]]+)\]/g, (m, file) => {
-      const d = typeof contextImageDesc === 'function' ? contextImageDesc(file) : ''
-      return d ? `[${d}]` : m
-    })
+  /**
+   * **不再替换了 —— 原样返回。**
+   *
+   * 早先这里把 `[图片:X.jpg]` 换成描述，为此要在 5 个渲染入口各调一次
+   * （当前消息、私聊正文、引用原文、群聊当前消息、历史记录），
+   * **每加一个入口就漏一次，一共漏了 6 次**。
+   *
+   * 现在描述由 `image_mark` 直接写进 `text`（`[图片 橘猫托着下巴]`），
+   * 渲染层拿到的就是成品。函数保留是为了不改 4 处调用点 ——
+   * 它现在只是个恒等函数，行为上等同于删除。
+   */
+  const currentImageText = raw => String(raw ?? '')
   /**
    * 私聊：没有群聊记录，但**有角色、也有长期记忆**。
    *
@@ -651,10 +661,19 @@ export function renderPrompt(
      */
     // 回复里也可能是一张图（`[图片:X.jpg]`），同样要换成描述再截断
     const replyText = currentImageText(String(it.replyText ?? '').trim())
+    const replyFrom = String(it.replyFrom ?? '').trim()
+    /**
+     * **带上发送者。**
+     *
+     * 只说「回复「那张图」」不够 —— 群里好几个人都发过图，
+     * 模型分不清在应谁的。`（回复 白绫 的「…」）` 才闭合。
+     */
     const reply = it.replyTo
       ? replyText
-        ? `（回复「${replyText.length > 24 ? `${replyText.slice(0, 24)}…` : replyText}」）`
-        : '（回复了一条消息）'
+        ? `（回复${replyFrom ? `${replyFrom}的` : ''}「${
+            replyText.length > 24 ? `${replyText.slice(0, 24)}…` : replyText
+          }」）`
+        : `（回复了${replyFrom ? `${replyFrom}的` : '一条'}消息）`
       : ''
     const head = id ? `[#${id}] ${who}${at}${reply}` : `${who}${at}${reply}`
     return text ? `${head}：${text}` : head

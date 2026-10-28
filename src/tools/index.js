@@ -183,6 +183,14 @@ export function createQqTools({
    * @type {((attachment: object) => Promise<string>)|null}
    */
   describeImage = null,
+  /**
+   * `image_mark` 写完 kv 之后，通知内核把聊天记录里那处占位一起改掉。
+   *
+   * 内核会原子地更新 `messages.text` / `memories.text` 和内存缓冲 ——
+   * 这是"渲染层不再做替换"的前提。
+   * @type {((file: string, desc: string) => void)|null}
+   */
+  onImageMarked = null,
   /** 能授权群管理操作的 QQ 号（Set 或数组）；由 `tools.adminOwners` 或私聊白名单推导 */
   ownerIds = null,
   /** 这次触发回复的消息发送者 QQ 号；`qq_kick` 用它做身份校验 */
@@ -421,6 +429,22 @@ export function createQqTools({
 
       const text = desc.slice(0, 120)
       store.set(key, text)
+      /**
+       * **交给内核把"聊天记录里那处占位"一起改掉。**
+       *
+       * 只写 kv 是不够的：`messages.text` 和 `memories.text` 里还是 `[图片]`，
+       * 于是渲染层不得不做字符串替换 —— 而替换点有 6 个，每加一个就漏一次。
+       *
+       * 内核在这里原子地改三处（kv 已经写完，再补库和内存），
+       * 之后**渲染层什么都不用做**。
+       *
+       * 用回调而不是直接传 Store/Context：工具层不该认识数据库和缓冲区。
+       */
+      try {
+        onImageMarked?.(file, text)
+      } catch {
+        /* 同步失败不影响"描述已经记下"这个事实 */
+      }
       return { ok: true, file, desc: text }
     },
   )

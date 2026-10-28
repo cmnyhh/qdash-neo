@@ -762,7 +762,7 @@ test('提示词：系统要求拼在最前并声明优先人设（AGENTS.md 通�
 
 /* ---------------- 读图：图片标识进 prompt + latest 兜底 ---------------- */
 
-test('提示词：图片带 file 标识（模型才能精确指定，而不是瞎猜 latest）', () => {
+test('提示词：图片只渲染 [图片]，不带 id（读图走 latest）', () => {
   const ev = normalizeEvent({
     post_type: 'message',
     message_type: 'group',
@@ -775,9 +775,22 @@ test('提示词：图片带 file 标识（模型才能精确指定，而不是�
     time: Math.floor(Date.now() / 1000),
     sender: { user_id: 1, nickname: '甲' },
   })
+  /**
+   * `imageFile` 仍然解析出来 —— 它要进 `messages.image_file` 列，
+   * 供 `image_mark` 找回"哪条消息该更新"。
+   */
   assert.equal(ev.imageFile, 'abc123.jpg')
+
   const p = renderPrompt(ev)
-  assert.match(p, /\[图片:abc123\.jpg\]/, '要有真实标识而不是光秃秃的 [图片]')
+  /**
+   * **prompt 里不再带 id。**
+   *
+   * 早先要求 `[图片:abc123.jpg]`，好让模型精确指定读哪张。后来确认：
+   * 历史图不需要读（白烧视觉 token），当前图用 `qq_get_image({ file: 'latest' })`
+   * 就够 —— 那个兜底走 `lastImageFile`，**不依赖 text 里的 id**。
+   */
+  assert.doesNotMatch(p, /图片:abc123\.jpg/, '不该把 id 漏进 prompt')
+  assert.match(p, /\[图片\]/, '至少要说清这里有张图')
 })
 
 test('读图工具：file=latest 时用会话最近一张图兜底', async () => {

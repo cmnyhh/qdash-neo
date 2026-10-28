@@ -37,6 +37,19 @@ export class GroupContext {
   constructor({
     limit = 20, maxChars = 3000, ttlMs = DEFAULT_TTL_MS, perChatCap = 80,
     store = null, log = () => {}, isTrusted = null,
+    /**
+     * **图片 id → 描述**（`image:desc:<file>` 的那个 kv）。
+     *
+     * `append` 时现查一次：**缓冲里永远不存 `[图片]` 这种占位**，
+     * 有描述就直接写 `[图片 橘猫托着下巴]`。
+     *
+     * 为什么在入口处查、而不是渲染时替换：渲染点有 6 个（群聊记录、
+     * 最近对话、二次渲染、私聊正文、当前消息、引用回复），
+     * **每加一个就漏一次**。在唯一入口查一次，就再也没有"漏"这回事。
+     *
+     * @type {((file: string) => string)|null}
+     */
+    resolveImage = null,
   } = {}) {
     this.limit = limit
     this.maxChars = maxChars
@@ -45,6 +58,7 @@ export class GroupContext {
     this.store = store
     this.log = log
     this.isTrusted = isTrusted
+    this.resolveImage = resolveImage
     /** @type {Map<string, ContextLine[]>} */
     this.chats = new Map()
     /** @type {Set<string>} 已成功从库里恢复过的 chat（懒加载，避免启动时扫全表） */
@@ -84,11 +98,58 @@ export class GroupContext {
   }
 
   /**
+   * **描述迟到时，把缓冲里那条改掉。**
+   *
+   * 时序：入站 `append` 时描述可能还没生成（模型还没调 `image_mark`），
+   * 于是缓冲里先存 `[图片]`。几秒后 `image_mark` 来了 —— 这时候光改库没用，
+   * **这一轮即将渲染的 prompt 读的是内存缓冲**，必须一起改。
+   *
+   * 按 `imageFile` 精确匹配，不靠字符串猜（`text` 里已经没有 id 了）。
+   *
+   * @param {string} chatKey
+   * @param {string} file 图片 id
+   * @param {string} desc 描述
+   * @returns {number} 改了几条
+   */
+  replaceImageDesc(chatKey, file, desc) {
+    const f = String(file ?? '').trim()
+    const d = String(desc ?? '').trim()
+    if (!f || !d) return 0
+    const list = this.chats.get(chatKey)
+    if (!Array.isArray(list)) return 0
+    let n = 0
+    for (const line of list) {
+      if (String(line?.imageFile ?? '') !== f) continue
+      line.text = `[图片 ${d}]`
+      n += 1
+    }
+    return n
+  }
+
+  /**
    * @param {string} chatKey
    * @param {ContextLine} line
    */
   append(chatKey, line) {
     const list = this.chats.get(chatKey) ?? (this.ensureRestored(chatKey), this.chats.get(chatKey) ?? [])
+    /**
+     * **带图的条目录入时就把描述查好。**
+     *
+     * 缓冲里存的永远是"能直接读懂的文本"，渲染层不需要再做替换 ——
+     * 这一条替换如果散到 6 个渲染点去写，就一定会漏。
+     *
+     * 查不到（模型还没调 `image_mark`）就保持 `[图片]`，
+     * 下一轮 `image_mark` 会把库和这里一起更新（见 `setImageDesc` + 内存回写）。
+     */
+    const f = String(line?.imageFile ?? '').trim()
+    if (f && typeof this.resolveImage === 'function') {
+      try {
+        const d = String(this.resolveImage(f) ?? '').trim()
+        if (d) line = { ...line, text: `[图片 ${d}]` }
+      } catch {
+        /* 查描述失败不该影响收消息 */
+      }
+    }
     list.push(line)
     // 内存里留得比"会渲染的"多一点：留出余量给 transient 丢弃，也避免频繁回库
     if (list.length > this.perChatCap) list.splice(0, list.length - this.perChatCap)

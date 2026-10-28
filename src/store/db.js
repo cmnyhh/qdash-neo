@@ -66,6 +66,8 @@ create table if not exists messages (
   ts integer not null, state text,
   -- 是否 @ 了机器人：重启恢复上下文时要用，否则历史里"谁 @ 过我"全丢
   at_me integer not null default 0,
+  -- 这条消息带的图片 id（image_mark 靠它找回"哪条消息该更新"）
+  image_file text,
   unique(chat_key, qq_msg_id)
 );
 create index if not exists idx_msg_chat_ts on messages(chat_key, ts desc);
@@ -171,6 +173,64 @@ export class Store {
     this.ensureColumn('judgements', 'qq_msg_ids', 'text')
     this.ensureColumn('judgements', 'code', 'text')
     this.ensureColumn('messages', 'at_me', 'integer not null default 0')
+    /**
+     * 图片 id（`image_mark` 靠它找回"哪条消息该更新"）。
+     *
+     * **幂等**：`ensureColumn` 会先查 `pragma table_info`，已有就跳过 ——
+     * 这里不做回填，老消息的 `image_file` 保持 null。
+     * 那些老消息的 `text` 里还是 `[图片:xxx]` 形式，靠下面
+     * `migrateLegacyImageTags()` 一次性抽出来。
+     */
+    this.ensureColumn('messages', 'image_file', 'text')
+    this.migrateLegacyImageTags()
+  }
+
+  /**
+   * **把老消息里的 `[图片:X.jpg]` 抽成 `image_file` 列，text 换成描述或 `[图片]`。**
+   *
+   * 为什么要动历史数据：新代码不再做"渲染时替换"，老消息如果还留着
+   * `[图片:9C62A6A12E33725B...]`，模型看到的就是一串哈希 —— 比没有更糟。
+   *
+   * **幂等**：处理完写一个 kv 标记，之后启动直接跳过。
+   * 只扫 `image_file is null` 且 text 里含 `[图片:` 的行，量很小。
+   */
+  migrateLegacyImageTags() {
+    const FLAG = 'schema:migrated:image_file'
+    try {
+      if (this.kvGet(FLAG)) return
+      const RE = /\[图片:([^\]]+)\]/
+
+      // ① messages
+      const rows = this.db
+        .prepare(`select id, text from messages where image_file is null and text like '%[图片:%'`)
+        .all()
+      const upd = this.db.prepare('update messages set image_file = ?, text = ? where id = ?')
+      for (const r of rows) {
+        const m = RE.exec(String(r.text ?? ''))
+        if (!m) continue
+        const desc = String(this.kvGet(`image:desc:${m[1]}`) ?? '').trim()
+        upd.run(m[1], desc ? `[图片 ${desc}]` : '[图片]', r.id)
+      }
+
+      // ② memories：记忆里引用的同一张图，同样只保留描述
+      const mems = this.db.prepare(`select id, text from memories where text like '%[图片:%'`).all()
+      const updMem = this.db.prepare('update memories set text = ? where id = ?')
+      for (const r of mems) {
+        const next = String(r.text ?? '').replace(/\[图片:([^\]]+)\]/g, (_m, f) => {
+          const d = String(this.kvGet(`image:desc:${f}`) ?? '').trim()
+          return d ? `[图片 ${d}]` : '[图片]'
+        })
+        if (next !== r.text) updMem.run(next, r.id)
+      }
+
+      this.kvSet(FLAG, String(Date.now()))
+      if (rows.length || mems.length) {
+        console.log(`qdash-neo: 迁移图片占位 消息 ${rows.length} 条 / 记忆 ${mems.length} 条`)
+      }
+    } catch (err) {
+      // 迁移失败不该挡住启动：下轮还会再试
+      console.log(`qdash-neo: 迁移图片占位失败 msg=${err?.message}`)
+    }
   }
 
   /** @param {string} table @param {string} column @param {string} ddl 列定义（不含列名） */
@@ -193,14 +253,25 @@ export class Store {
    */
   insertMessage({
     chatKey, qqMsgId, direction, senderId = '', senderName = '', text = '',
-    state = '', ts = Date.now(), atMe = 0,
+    state = '', ts = Date.now(), atMe = 0, imageFile = '',
   }) {
     const stmt = this.db.prepare(
-      `insert into messages (chat_key, qq_msg_id, direction, sender_id, sender_name, text, ts, state, at_me)
-       values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `insert into messages (chat_key, qq_msg_id, direction, sender_id, sender_name, text, ts, state, at_me, image_file)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        on conflict(chat_key, qq_msg_id) do nothing`,
     )
-    const res = stmt.run(chatKey, qqMsgId, direction, senderId, senderName, text, ts, state, atMe ? 1 : 0)
+    const res = stmt.run(
+      chatKey,
+      qqMsgId,
+      direction,
+      senderId,
+      senderName,
+      text,
+      ts,
+      state,
+      atMe ? 1 : 0,
+      String(imageFile ?? '') || null,
+    )
     return Number(res.changes) > 0
   }
 
@@ -246,6 +317,60 @@ export class Store {
    * 现在发送成功后有真实 id 了，就地替换。
    * `unique(chat_key, qq_msg_id)` 可能冲突（极少见），失败就保持原样。
    */
+  /**
+   * **把"这张图是什么"一次写进三处，单事务。**
+   *
+   * 这是整个改动的核心：早先 `image_mark` 只写 kv（`image:desc:<file>`），
+   * 而 `messages.text` 和 `memories.text` 里还是 `[图片:X.jpg]` —— 于是
+   * **渲染层不得不做字符串替换**，而替换点散落在 6 个地方，每加一个
+   * 渲染入口就漏一次（已漏过 6 次）。
+   *
+   * 现在三处一起写，渲染层什么都不用做：
+   *
+   *   ① kv          image:desc:<file> = 描述（"有没有描述"的唯一真相）
+   *   ② messages    按 image_file 找到那条消息，text 换成 `[图片 描述]`
+   *   ③ memories    记忆里引用了这张图的地方，同样替换
+   *
+   * **用一个事务**：三处必须一起成功。只写 kv 不写消息，就是回到老问题；
+   * 只写消息不写 kv，下一轮 `context.append` 又查不到描述。
+   *
+   * @returns {number} 被更新的消息行数（0 表示这条消息不在本会话 / 已更新过）
+   */
+  setImageDesc(chatKey, file, desc) {
+    const f = String(file ?? '').trim()
+    const d = String(desc ?? '').trim()
+    if (!f || !d) return 0
+
+    const marker = `[图片 ${d}]`
+    let changed = 0
+    try {
+      this.db.exec('begin')
+      try {
+        // ① kv：写入后 `context.append` 就能查到
+        this.kvSet(`image:desc:${f}`, d)
+
+        // ② 落库：按 image_file 精确定位，不靠字符串猜
+        const a = this.db
+          .prepare('update messages set text = ? where chat_key = ? and image_file = ?')
+          .run(marker, String(chatKey), f)
+        changed = Number(a.changes)
+
+        // ③ 记忆：老记录里可能引用了这张图的占位
+        this.db
+          .prepare(`update memories set text = replace(text, ?, ?) where chat_key = ? and text like ?`)
+          .run(`[图片:${f}]`, marker, String(chatKey), `%[图片:${f}]%`)
+
+        this.db.exec('commit')
+      } catch (err) {
+        this.db.exec('rollback')
+        throw err
+      }
+    } catch {
+      return 0
+    }
+    return changed
+  }
+
   replaceQqMsgId(chatKey, oldId, newId) {
     if (!chatKey || !oldId || !newId || String(oldId) === String(newId)) return false
     try {
