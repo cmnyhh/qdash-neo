@@ -57,11 +57,20 @@ export function attachSessionEvents(ctx, { log, onReply, onUsage, onSilent, onSl
           if (typeof onSilent === 'function') onSilent(chatKey, event)
           return
         }
-        // 模型自己要求休息：`[[SLEEP:30]]` → 设沉睡并静默（本条不发）
-        const sleepMinutes = parseSleepMarker(text)
-        if (sleepMinutes > 0) {
-          log('info', `qdash-neo: ${chatKey} 模型要求休息 ${sleepMinutes} 分钟`)
-          if (typeof onSleep === 'function') onSleep(chatKey, sleepMinutes, event)
+        /**
+         * 模型自己要求休息。
+         *
+         *   `[[SLEEP]]`      → `-1`，交给 `onSleep` 用配置的短期安静
+         *   `[[SLEEP:300]]`  → 指定的秒数
+         *
+         * 判据是 `!== 0`（0 表示"不是标记"），不能再用 `> 0`——
+         * 否则不带数字的 `[[SLEEP]]` 会被当成普通文本，原样发到群里。
+         */
+        const sleepSeconds = parseSleepMarker(text)
+        if (sleepSeconds !== 0) {
+          const human = sleepSeconds > 0 ? `${sleepSeconds} 秒` : '短期安静（按配置）'
+          log('info', `qdash-neo: ${chatKey} 模型要求休息 ${human}`)
+          if (typeof onSleep === 'function') onSleep(chatKey, sleepSeconds, event)
           return
         }
         /**

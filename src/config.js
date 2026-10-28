@@ -166,18 +166,28 @@ export async function createConfig() {
          */
         maxSeconds: Schema.natural().default(600).description('沉睡时长上限（秒），超出会被夹到这个值'),
         /**
-         * **短期安静（秒）。**
+         * **短期安静的时长范围（秒）。**
          *
          * 少了这一档，模型只有两个极端可选：
          *
-         *   `[[SILENT]]`  只管这一轮，下一轮又被叫起来
+         *   `[[SILENT]]`    只管这一轮，下一轮又被叫起来
          *   `[[SLEEP:600]]` 闭麦十分钟，可能错过整段话题
          *
-         * 而真人"先看看再说"是**一两分钟**的事 —— 这段就是补那一档。
+         * **为什么是范围而不是一个固定值**：
+         *
+         * 固定 60 秒的话，每次"先看看再说"都精确睡 60 秒 —— 太像定时器。
+         * 真人说"等会儿再说"不会有精确时长。所以模型写 `[[SLEEP]]`（不带数字）时，
+         * 在这两个数之间**随机取一个**。
+         *
+         * 模型自己填秒数（`[[SLEEP:300]]`）仍然可以，那会被夹到
+         * `minSeconds`~`maxSeconds` 之间。
          */
-        shortSeconds: Schema.natural()
-          .default(60)
-          .description('短期安静（秒）：想让模型"先观察一下"时用这一档（默认 60 秒）'),
+        shortMinSeconds: Schema.natural()
+          .default(45)
+          .description('短期安静下限（秒）：模型写 [[SLEEP]] 时，时长在这个范围内随机'),
+        shortMaxSeconds: Schema.natural()
+          .default(120)
+          .description('短期安静上限（秒）。和下限一起构成随机区间'),
         /**
          * **连续几次之后就不给"安静"这个选项了。**
          *

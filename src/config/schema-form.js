@@ -91,7 +91,8 @@ export const FIELD_LABELS = {
    * `policy.sleep.shortSeconds`，用户根本认不出这是"安静一会儿"。
    */
   'policy.sleep.enabled': '允许它自己想安静一会儿',
-  'policy.sleep.shortSeconds': '短期安静（秒）',
+  'policy.sleep.shortMinSeconds': '短期安静下限（秒）',
+  'policy.sleep.shortMaxSeconds': '短期安静上限（秒）',
   'policy.sleep.maxSeconds': '最长安静（秒）',
   'policy.sleep.minSeconds': '最短安静（秒）',
   'policy.sleep.maxConsecutive': '连续安静几次后不再允许',

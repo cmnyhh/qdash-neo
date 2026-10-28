@@ -1367,7 +1367,16 @@ test('沉睡标记：只认整行，正文里出现不算（宁可多发一条�
   assert.equal(parseSleepMarker('  [[SLEEP:5]]  '), 5)
   assert.equal(parseSleepMarker('我觉得 [[SLEEP:30]] 吧'), 0)
   assert.equal(parseSleepMarker('[[SLEEP:0]]'), 0)
-  assert.equal(parseSleepMarker('[[SLEEP]]'), 0)
+  /**
+   * **不带秒数 = `-1`**（不是 0）。
+   *
+   * `0` 已经被"不是标记"占用，而 `[[SLEEP]]` 是一条**有效**的指令：
+   * 它说"我要安静一阵"，只是没指定多久 —— 时长由配置的短期区间决定。
+   *
+   * 早先要求必须写数字，等于逼模型猜"该安静多久"，它只能照抄提示里的例子。
+   */
+  assert.equal(parseSleepMarker('[[SLEEP]]'), -1, '不带秒数是有效标记')
+  assert.equal(parseSleepMarker('  [[SLEEP]]  '), -1, '前后空白不影响')
   assert.equal(parseSleepMarker(''), 0)
 })
 

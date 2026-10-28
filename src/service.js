@@ -251,8 +251,13 @@ export class QdashNeoService {
      */
     this.sleepMin = 30
     this.sleepMax = 600
-    /** 短期安静档（秒）：见 config.js 里的说明 */
-    this.sleepShort = 60
+    /**
+     * 短期安静的随机区间（秒）：模型写 `[[SLEEP]]`（不带数字）时用。
+     *
+     * 固定一个值会让每次"先看看再说"都精确睡同样久，太像定时器。
+     */
+    this.sleepShortMin = 45
+    this.sleepShortMax = 120
     /** 连续安静几次后不再给该选项 */
     this.maxConsecutiveSleep = 2
     /**
@@ -743,7 +748,7 @@ export class QdashNeoService {
         const lastProactive = this.proactiveRecent.get(chatKey) ?? 0
         const withinProactive = Date.now() - lastProactive < 90_000
         console.log(
-          `qdash-neo: onSleep ${chatKey} ${minutes}s ` +
+          `qdash-neo: onSleep ${chatKey} ${minutes < 0 ? '未指定（用短期区间）' : `${minutes}s`} ` +
             `withinProactive=${withinProactive}（${Math.round((Date.now() - lastProactive) / 1000)}s 前）`,
         )
         if (withinProactive) {
@@ -767,7 +772,22 @@ export class QdashNeoService {
           this.log('warn', `qdash-neo: ${chatKey} 已连续安静 ${n} 次，下一轮不再给休眠选项`)
         }
 
-        this.setSleep(chatKey, minutes)
+        /**
+         * **`minutes < 0` = 模型只写了 `[[SLEEP]]`，没指定时长。**
+         *
+         * 那种情况用配置的短期区间随机取一个 —— 让它在
+         * `shortMinSeconds`~`shortMaxSeconds` 之间落地，而不是逼模型猜数字。
+         *
+         * 模型填了数字（`-1` 以外）就尊重它的选择，`setSleep` 里再夹到
+         * `minSeconds`~`maxSeconds`。
+         */
+        const seconds =
+          minutes < 0
+            ? Math.round(
+                this.sleepShortMin + Math.random() * (this.sleepShortMax - this.sleepShortMin),
+              )
+            : minutes
+        this.setSleep(chatKey, seconds)
       },
       // 模型给自己排个期（`[[LATER:N|备忘]]`）：到点再唤起一次，说不说由它重新判断
       onLater: (chatKey, later) => {
@@ -1006,8 +1026,16 @@ export class QdashNeoService {
      * **短期安静档**：`SILENT` 只管一轮、`SLEEP:600` 又太长，
      * 真人"先看看再说"是这一档。
      */
-    const short = Number(sl.shortSeconds)
-    this.sleepShort = Number.isFinite(short) && short > 0 ? Math.round(short) : 60
+    /**
+     * 短期安静的随机区间。
+     *
+     * 上限低于下限时自动拉平成"下限 + 30" —— 配置填反了不该让它睡不了。
+     */
+    const sMin = Number(sl.shortMinSeconds)
+    const sMax = Number(sl.shortMaxSeconds)
+    this.sleepShortMin = Number.isFinite(sMin) && sMin > 0 ? Math.round(sMin) : 45
+    this.sleepShortMax =
+      Number.isFinite(sMax) && sMax >= this.sleepShortMin ? Math.round(sMax) : this.sleepShortMin + 30
     /** 连续安静几次后不再给这个选项（0 = 不限） */
     const maxCons = Number(sl.maxConsecutive)
     this.maxConsecutiveSleep = Number.isFinite(maxCons) && maxCons >= 0 ? Math.round(maxCons) : 2
@@ -2798,7 +2826,7 @@ export class QdashNeoService {
         !this.isSummon(ev) &&
         // 连续安静到次数后不再给 —— 见 config 里 `maxConsecutive` 的说明
         (this.consecutiveSleep.get(chatKey) ?? 0) < this.maxConsecutiveSleep
-          ? { min: this.sleepMin, max: this.sleepMax, short: this.sleepShort }
+          ? { min: this.sleepMin, max: this.sleepMax, shortMin: this.sleepShortMin, shortMax: this.sleepShortMax }
           : null,
 
       /**

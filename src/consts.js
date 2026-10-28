@@ -21,18 +21,33 @@ export const SILENT_MARKER = '[[SILENT]]'
  * 「刚被呛了一句就睡十分钟」「聊得正热就不睡」比均匀随机自然得多。
  * 插件只做三件事：把范围告诉它、认这个标记、到点放它回来。
  */
-const SLEEP_RE = /^\s*\[\[SLEEP:(\d{1,4})\]\]\s*$/
+/**
+ * **秒数可以省略**：`[[SLEEP]]` = 短期安静，时长由配置决定。
+ *
+ * 要求模型每次都填一个数字，其实是在逼它猜 —— 它不知道"此刻该安静多久"，
+ * 只能按提示里那个例子照抄（于是每次都 60）。而"先看看再说"本来就是个
+ * 模糊的时长，让配置来定比让它猜准。
+ *
+ * 真要指定就写 `[[SLEEP:300]]`。
+ */
+const SLEEP_RE = /^\s*\[\[SLEEP(?::(\d{1,4}))?\]\]\s*$/
 
 /**
  * 解析沉睡标记。
+ *
  * @param {string} text
- * @returns {number} 分钟数；不是标记则返回 0
+ * @returns {number}
+ *   `0`  = 不是标记
+ *   `-1` = 是标记但**没写秒数**（`[[SLEEP]]`）→ 调用方用配置的短期安静
+ *   `>0` = 指定的秒数
  */
 export function parseSleepMarker(text) {
   const m = SLEEP_RE.exec(String(text ?? ''))
   if (!m) return 0
-  const minutes = Number(m[1])
-  return Number.isFinite(minutes) && minutes > 0 ? minutes : 0
+  // 没写数字（`[[SLEEP]]`）
+  if (m[1] === undefined) return -1
+  const seconds = Number(m[1])
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : 0
 }
 
 /**
