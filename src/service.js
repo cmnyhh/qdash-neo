@@ -886,7 +886,17 @@ export class QdashNeoService {
       token: String(onebot.token || ''),
       selfId: String(onebot.selfId || ''),
     }
-    this.client.on('message', raw => this.handleInbound(raw))
+    /**
+     * `handleInbound` 是 async（图片消息可能要补下载地址），
+     * 这里**必须接住 Promise** —— 否则异常变成 unhandled rejection，
+     * 表现是"消息没反应、日志里什么都没有"。
+     */
+    this.client.on('message', raw => {
+      const p = this.handleInbound(raw)
+      if (p && typeof p.catch === 'function') {
+        p.catch(err => this.log('error', `qdash-neo: 处理入站失败 msg=${err?.message}`, err))
+      }
+    })
     this.client.on('ready', () => this.log('info', 'qdash-neo: OneBot 就绪'))
     this.client.on('close', () => this.log('warn', 'qdash-neo: OneBot 连接关闭，等待重连'))
     this.client.on('login', info => this.onLogin(info))
@@ -1633,7 +1643,14 @@ export class QdashNeoService {
     }
   }
 
-  handleInbound(raw) {
+  /**
+   * **必须是 async**：图片消息可能要补一次 `get_image` 拿下载地址
+   * （SnowLuma 的消息段只给 `file` 不给 `url`，插件因此存不下图）。
+   *
+   * 调用方 `client.on('message')` 不 await，那边补了 catch ——
+   * 否则这里的异常会变成 unhandled rejection，表现是"消息没反应、日志空白"。
+   */
+  async handleInbound(raw) {
     const ev = normalizeEvent(raw, { selfId: this.config?.onebot?.selfId })
     if (!ev) return
     this.stats.inbound += 1
@@ -1686,6 +1703,41 @@ export class QdashNeoService {
      * 后面还有批窗口、判定、沉睡这些环节。想只要"真要回复"的那种，
      * 订阅 `turn/end` 更准。
      */
+    /**
+     * **补图片下载地址：不是所有协议端都在消息段里给 `url`。**
+     *
+     * `sticker_save` 要把图存下来，靠的是插件自己维护的 `图片标识 → url`
+     * 映射（插件没有 `client`，只能从入站事件里捡）。而 SnowLuma 的消息段
+     * **只给 `file` 不给 `url`** —— 于是那张图从没进过映射，用户调
+     * `sticker_save` 就报：
+     *
+     *     找不到这张图的下载地址（04314779…）。可能是消息太早、图片链接已过期
+     *
+     * **"消息太早"是误导**：消息刚到，只是从来没拿到过地址。
+     *
+     * 只有 `url` 为空时才调 `get_image`，正常消息不受影响。
+     * 拿不到就算了 —— 图片地址失效不该挡住消息处理。
+     */
+    if (ev.hasImage && ev.imageFile && !ev.imageUrl) {
+      try {
+        const r = await this.client?.call?.('get_image', { file: ev.imageFile }, 5_000)
+        const u = String(r?.url ?? r?.data?.url ?? '').trim()
+        if (u) {
+          ev.imageUrl = u
+          console.log(`qdash-neo: 补图片地址成功 ${ev.chatKey} file=${ev.imageFile.slice(0, 20)}`)
+        } else {
+          console.log(
+            `qdash-neo: 图片没有下载地址 ${ev.chatKey} file=${ev.imageFile.slice(0, 20)} ` +
+              `get_image=${JSON.stringify(r)?.slice(0, 160)}`,
+          )
+        }
+      } catch (err) {
+        console.log(
+          `qdash-neo: 补图片地址失败 ${ev.chatKey} file=${ev.imageFile.slice(0, 20)} msg=${err?.message}`,
+        )
+      }
+    }
+
     this.pluginEvents.emit('message/inbound', ev)
 
     /**
