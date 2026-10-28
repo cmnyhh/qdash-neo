@@ -145,8 +145,9 @@ export const QQ_TOOLS = [
     group: 'write',
     action: 'send',
     title: '发语音',
-    description: '往当前会话发一条语音库里的音频文件（默认只允许库内文件）。',
-    params: { name: '语音库里的文件名，如 hi.mp3' },
+    // 不写"语音库"：这个描述会进模型看的工具清单，它会照着说「库里没有」
+    description: '发一条语音。name 填要发的那条的名字（不确定有哪些，先看看手头有什么）。',
+    params: { name: '要发的那条语音的名字，如 hi.mp3' },
     sideEffect: true,
   },
   /**
@@ -232,8 +233,8 @@ export const QQ_TOOLS = [
     name: 'qq_voice_list',
     group: 'read',
     action: 'list',
-    title: '语音库',
-    description: '列出语音库里可用的音频文件。',
+    title: '手头有哪些语音',
+    description: '看看手头有哪些语音能发。',
     params: {},
   },
   {
