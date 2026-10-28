@@ -496,14 +496,24 @@ export function renderPrompt(
      *   @了别人          → （@别人，不是在叫你）   ← 防止抢答
      */
     const others = Array.isArray(it.atTargets) ? it.atTargets : []
-    // 把 QQ 号直接列出来：历史里每条都带 `昵称(号码)`，两下一对就知道是谁
     const atNames = others.map(q => `@${q}`).join(' ')
+    const hasText = Boolean(String(it.text ?? '').trim())
+    /**
+     * 纯 @（没正文）要说清"**没说话**"。
+     *
+     * 否则渲染成 `甲(2)（@888，不是在叫你）`，模型会把它读成"一条空消息"——
+     * 实测它的原话就是 `Empty message addressed to someone else. Silent.`
+     * 行为没错（确实不该接），但**把纯 @ 误判成空**，容易在下一次类似场景里
+     * 继续用"空"来解释，而实际语义是"有人叫了别人但没说事"。
+     */
     const at = it.atMe
       ? others.length
         ? `（@你，也在叫 ${atNames}）`
         : '（@你）'
       : others.length
-        ? `（${atNames}，不是在叫你）`
+        ? hasText
+          ? `（${atNames}，不是在叫你）`
+          : `（只 @ 了 ${others.join(' ')}，没说话，不是在叫你）`
         : ''
     const text = String(it.text || (it.hasImage ? imageTag(it) : '')).replace(/\s*\n\s*/g, ' ⏎ ')
     /**
