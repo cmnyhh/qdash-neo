@@ -16,6 +16,7 @@ import { renderContextBlock } from '../pipeline/context.js'
  * @property {string} messageId
  * @property {string} text
  * @property {boolean} atMe
+ * @property {string[]} [atTargets] 还 @ 了哪些人（不含自己）；用来说清"不是在叫你"
  * @property {boolean} hasImage
  * @property {string} [senderName] 群名片优先，其次昵称 —— 模型不知道 QQ 侧身份，不给它就分不清谁在说话
  * @property {number} [ts] 平台时间（毫秒）
@@ -84,6 +85,23 @@ export function normalizeEvent(raw, { selfId = '' } = {}) {
     .join('')
     .trim()
   const atMe = segments.some(s => s && s.type === 'at' && String(s.data?.qq) === self)
+  /**
+   * **@ 了哪些别人**（不含自己）。
+   *
+   * 早先只算了 `atMe`，于是"A @ B 说「你昨天那个方案」"进 prompt 后变成：
+   *
+   *     A：你昨天那个方案
+   *
+   * 模型看不到 @ 的是谁，**自然以为在问它** —— 这是实测高频的误判来源。
+   *
+   * 只收 QQ 号，不带昵称：OneBot v11 的 `at` 段标准结构只有 `data.qq`，
+   * 昵称是各家实现的扩展，不能依赖。渲染侧统一写成「@别人」，
+   * 对模型来说"不是在叫我"这个信息比"@的是张三"更重要。
+   */
+  const atTargets = segments
+    .filter(s => s && s.type === 'at')
+    .map(s => String(s.data?.qq ?? '').trim())
+    .filter(q => q && q !== self)
   const hasImage = segments.some(s => s && s.type === 'image')
   /**
    * 图片的文件标识。
@@ -117,6 +135,8 @@ export function normalizeEvent(raw, { selfId = '' } = {}) {
     messageId: raw.message_id == null ? '' : String(raw.message_id),
     text,
     atMe,
+    /** 这条消息还 @ 了哪些人（不含自己）—— 用的是"没在叫我"这个信号 */
+    atTargets,
     hasImage,
     imageFile,
     imageUrl,
@@ -462,7 +482,27 @@ export function renderPrompt(
   const multi = lines.length > 1
   const one = it => {
     const who = it.senderName ? `${it.senderName}(${it.userId})` : it.userId
-    const at = it.atMe ? '（@你）' : ''
+    /**
+     * **@ 别人时必须说清"不是叫你"。**
+     *
+     * 早先只有 `it.atMe ? '（@你）' : ''` 一个分支，于是"A @ B 说「你昨天那个方案」"
+     * 渲染成 `A：你昨天那个方案` —— 模型看不到 @ 的是谁，**以为在问自己**，
+     * 于是抢答了本该 B 回答的问题。这是实测高频的误判。
+     *
+     * 现在三种情况分开写，重点是最后一种要**显式排除**：
+     *
+     *   @你              → （@你）
+     *   @你，也@了别人    → （@你，也在叫别人）
+     *   @了别人          → （@别人，不是在叫你）   ← 防止抢答
+     */
+    const others = Array.isArray(it.atTargets) ? it.atTargets.length : 0
+    const at = it.atMe
+      ? others
+        ? '（@你，也在叫别人）'
+        : '（@你）'
+      : others
+        ? '（@别人，不是在叫你）'
+        : ''
     const text = String(it.text || (it.hasImage ? imageTag(it) : '')).replace(/\s*\n\s*/g, ' ⏎ ')
     /**
      * 群聊里带消息 ID，模型可以用 `qq_send_message({ reply_to })` 指定回哪一条。

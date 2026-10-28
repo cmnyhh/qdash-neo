@@ -2286,6 +2286,13 @@ export class QdashNeoService {
        */
       text: ev.text || (ev.hasImage ? imageTag(ev) : ''),
       atMe: ev.atMe,
+      /**
+       * 也记下 @ 了谁 —— 历史里同样要能看出"那句不是在叫它"。
+       *
+       * 只存内存（不落库）：`messages` 表没有这个列，重启后历史里就没了。
+       * 代价可接受：误判主要发生在**当前消息**，而那一条是准的。
+       */
+      atTargets: Array.isArray(ev.atTargets) ? ev.atTargets : [],
       ts: ev.ts ?? Date.now(),
       messageId: ev.messageId,
       direction: 'in',

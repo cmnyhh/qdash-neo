@@ -967,6 +967,62 @@ test('图片占位：查描述抛错也不炸，降级成 [图片]', () => {
   )
 })
 
+/**
+ * **@ 别人时必须说清"不是叫你"，否则模型会抢答。**
+ *
+ * 早先只有 `atMe ? '（@你）' : ''` 一个分支，于是"A @ B 说「你昨天那个方案」"
+ * 渲染成 `A：你昨天那个方案` —— 模型看不到 @ 的是谁，以为在问自己。
+ */
+test('@ 别人时要标出「不是在叫你」', () => {
+  const mk = segs => ({
+    post_type: 'message',
+    message_type: 'group',
+    self_id: 999,
+    group_id: 1,
+    user_id: 2,
+    message_id: 100,
+    time: Math.floor(Date.now() / 1000),
+    sender: { card: '甲' },
+    message: segs,
+  })
+
+  // 只 @ 别人：必须显式排除，否则它会抢着回答
+  const other = normalizeEvent(
+    mk([{ type: 'at', data: { qq: '888' } }, { type: 'text', data: { text: ' 你昨天那个方案' } }]),
+    999,
+  )
+  assert.deepEqual(other.atTargets, ['888'], '要记下 @ 的是谁')
+  assert.equal(other.atMe, false)
+  const p1 = renderPrompt(other, { botName: '狐狐', batch: [other] })
+  assert.match(p1, /@别人，不是在叫你/, '这条必须让模型知道不是在叫它')
+
+  // @ 我：不要出现"别人"字样，否则会削弱召唤感
+  const me = normalizeEvent(
+    mk([{ type: 'at', data: { qq: '999' } }, { type: 'text', data: { text: ' 在吗' } }]),
+    999,
+  )
+  assert.equal(me.atMe, true)
+  assert.deepEqual(me.atTargets, [], '@ 自己不算「别人」')
+  const p2 = renderPrompt(me, { botName: '狐狐', batch: [me] })
+  assert.match(p2, /（@你）/)
+  // 只能断言 `@别人` 这种组合，不能断言"别人"两个字 —— prompt 里本来就有
+  // 「别人在说正事」那段判断维度
+  assert.doesNotMatch(p2, /@别人/, '@ 我时不该出现"@别人"')
+
+  // 同时 @ 我和别人
+  const both = normalizeEvent(
+    mk([
+      { type: 'at', data: { qq: '999' } },
+      { type: 'at', data: { qq: '888' } },
+      { type: 'text', data: { text: ' 你们俩' } },
+    ]),
+    999,
+  )
+  assert.equal(both.atMe, true)
+  assert.deepEqual(both.atTargets, ['888'])
+  assert.match(renderPrompt(both, { botName: '狐狐', batch: [both] }), /@你，也在叫别人/)
+})
+
 test('renderPrompt 必须把 contextImageDesc 传给上下文渲染（二次渲染那条路径）', () => {
   const ev = {
     kind: 'group',
