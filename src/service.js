@@ -1365,10 +1365,27 @@ export class QdashNeoService {
     const { nickname, userId } = this.login ?? {}
     // 别名跟随当前人格卡；store 还没就绪时 personaOf() 返回 undefined，退回配置兜底
     const aliases = this.personaOf()?.aliases() ?? this.config?.identity?.aliases ?? []
-    const names = [nickname, userId, ...aliases].filter(Boolean)
+    /**
+     * **别名排最前。**
+     *
+     * `botName()` 取的是 `botNames[0]`，直接用进 prompt 的「你在群里，昵称是「X」」。
+     *
+     * 早先排成 `[nickname, userId, ...aliases]` —— 登录昵称是**QQ 号**
+     * （机器人账号的昵称往往就是号码），于是模型看到：
+     *
+     *     [QQ群 705590372] 你在群里，昵称是「3216839364」。
+     *     【你的角色设定】…你是白绫…
+     *
+     * **两句话互相打架**：一边说它叫号码，一边说它叫白绫。它当然按号码那套说话，
+     * 表现出来就是"人格没生效"。
+     *
+     * 判定用的名单仍然包含全部（`names` 是并集），这里只调**展示**的顺序。
+     */
+    const names = [...aliases, nickname, userId].filter(Boolean)
     this.judge?.setBotNames(names)
     this.gates?.setBotNames(names)
-    this.log('info', `qdash-neo: 机器人的称呼 ${this.judge?.botNames?.join('/') || '(无)'}`)
+    // 用 console.log：这条决定 prompt 里「你在群里，昵称是「X」」，info 级看不到
+    console.log(`qdash-neo: 机器人的称呼 ${this.judge?.botNames?.join(' / ') || '(无)'}`)
   }
 
   /**
@@ -2862,9 +2879,27 @@ export class QdashNeoService {
     if (row) this.log('debug', `qdash-neo: 记下没说的话 ${ev.chatKey} id=${row.id} ${text}`)
   }
 
-  /** 模型看到的机器人昵称：登录昵称优先，其次 QQ 号，最后兜底 */
+  /**
+   * 模型看到的机器人昵称。
+   *
+   * **人格卡的别名排第一，而且每次现查。**
+   *
+   * 早先取 `judge.botNames[0]`，而那个数组是 `syncBotNames()` 在某个时刻
+   * 快照下来的：`[nickname, userId, ...aliases]` —— 登录昵称（机器人账号的
+   * 昵称往往就是 **QQ 号**）排在别名前面。于是 prompt 里出现：
+   *
+   *     [QQ群 705590372] 你在群里，昵称是「3216839364」。
+   *     【你的角色设定】…你是白绫…
+   *
+   * **两句话互相打架**，模型按号码那套说话 —— 看起来就像"人格没生效"。
+   *
+   * 现查 `aliases()` 而不是依赖快照：那个快照什么时候更新、有没有更新，
+   * 取决于 `syncBotNames` 的调用时机（它还在 `applyConfig` 里和 persona
+   * 的更新顺序纠缠过）。**每次直接问人格卡，就不存在顺序问题。**
+   */
   botName() {
-    return this.judge?.botNames[0] || this.client?.nickname || this.config?.onebot?.selfId || '机器人'
+    const alias = this.personaOf()?.aliases()?.[0]
+    return alias || this.judge?.botNames[0] || this.client?.nickname || this.config?.onebot?.selfId || '机器人'
   }
 
   /**
@@ -3588,10 +3623,20 @@ export class QdashNeoService {
       this.log('info', 'qdash-neo: OneBot 连接参数变了，按新值重连')
       this.client.restart({ wsUrl: this.onebotApplied.wsUrl, token: this.onebotApplied.token })
     }
-    // 别名是配置项：热更新后必须让 judge 也认，否则只改了闸门那一半
-    this.syncBotNames()
     this.memoryOf()?.applyConfig(next)
+    /**
+     * **persona 必须先在它之前更新。**
+     *
+     * `syncBotNames` 读的是 `personaOf()?.aliases()`，而别名来自**人格卡**。
+     * 早先它排在 `personaOf()?.applyConfig(next)` **之前** —— 于是拿到的是
+     * 更新前的别名（首次启动时就是空），`botNames` 里没有「白绫」，
+     * prompt 里就退回显示登录昵称（机器人账号的昵称往往就是 QQ 号）。
+     *
+     * 表现：模型看到「你在群里，昵称是「3216839364」」和下面的角色卡
+     * 「你是白绫」互相打架，于是按号码那套说话 —— 看起来像人格没生效。
+     */
     this.personaOf()?.applyConfig(next)
+    this.syncBotNames()
 
     /**
      * **说清人格到底是"注入了"还是"只是存着"。**
