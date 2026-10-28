@@ -737,6 +737,8 @@ export class QdashNeoService {
     this.memory = new Memory({ store: this.store, config: this.config, log: this.log })
     // 人设放在插件层：judge 也要读它，放 DSH persona 里插件就看不见了
     this.persona = new Persona({ store: this.store, config: this.config, log: this.log })
+    /** 人格注入状态是否已经打过日志（`applyConfig` 会被热更新反复调用，只打一次） */
+    this.personaLogged = false
     this.voice = this.makeVoice(this.config)
     this.gates = new Gates(this.config)
     this.context = new GroupContext({
@@ -916,6 +918,7 @@ export class QdashNeoService {
      * 这个功能会静默失效，而它恰恰是用来发现"版本不对"的。
      */
     this.startUpdateCheck()
+
   }
 
   /**
@@ -3567,6 +3570,34 @@ export class QdashNeoService {
     this.syncBotNames()
     this.memoryOf()?.applyConfig(next)
     this.personaOf()?.applyConfig(next)
+
+    /**
+     * **说清人格到底是"注入了"还是"只是存着"。**
+     *
+     * 踩过一次：卡库里有 4606 字的角色卡、「白绫」也选成了当前卡，
+     * 但 `persona.enabled` 从没被打开（默认 `false`）—— `card()` 第一行就
+     * `return ''`，**人格一个字都没进过 prompt**，而界面上看不出任何异常。
+     *
+     * 「选了卡」和「启用注入」是两个开关，这个组合太容易漏。
+     *
+     * 放在 `applyConfig` 而不是 `start()`：`start()` 时 `this.store` 可能还没就绪，
+     * `personaOf()` 会返回 null（第一次加在 `start()` 里就一条日志都没打出来）。
+     *
+     * 只打一次：`applyConfig` 会被热更新反复调用，而这条信息只在启动时有用。
+     */
+    if (!this.personaLogged) {
+      const pc = this.personaOf()
+      if (pc) {
+        this.personaLogged = true
+        const len = String(pc.card('') ?? '').length
+        console.log(
+          pc.enabled
+            ? `qdash-neo: 人格已注入（角色卡 ${len} 字）`
+            : `qdash-neo: 人格未启用 —— 角色卡 ${len} 字存在但不会注入。` +
+                '控制台「人格」→ 打开「人设注入总开关」',
+        )
+      }
+    }
     /**
      * 语音库没有需要保留的运行态（只有内存里的发送时间戳，重建一次影响很小），
      * 所以配置变了直接重建 —— 比写一个 applyConfig 更不容易漏字段。
