@@ -24,6 +24,7 @@
  * 状态文件和每轮 prompt 一起膨胀（见 `_ref` 注释 6699-6705）。这里每次写都顺手 prune。
  */
 
+import { renderImageTags } from '../image/tag.js'
 import { localDay } from './daily.js'
 
 /**
@@ -314,28 +315,13 @@ export class Memory {
           `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
         : ''
       /**
-       * **这里也要把 `[图片:id]` 换成描述。**
+       * 图片占位符 → 描述。
        *
-       * 「群聊记录」那条路（`renderContextBlock`）早就换了，但这段漏了 ——
-       * 于是用户看到的「最近对话」里全是 `[图片]`，明明映射里已经有描述。
-       *
-       * 两段是拼起来用的，替换逻辑必须一致，否则同一张图在前一段有描述、
-       * 在后一段没有，模型会觉得那是两张不同的图。
+       * 逻辑在 `image/tag.js`：**不要在这里另写一份**。
+       * 早先「群聊记录」换了、这里没换，于是同一张图在前一段有描述、
+       * 后一段只剩 `[图片]` —— 模型会以为那是两张不同的图。
        */
-      const body = (() => {
-        const t = String(r.text ?? '').replace(/\s*\n\s*/g, ' ')
-        if (!t.includes('[图片')) return t
-        return t.replace(/\[图片:([^\]]+)\]/g, (_m, f) => {
-          let d = ''
-          try {
-            d = String(imageDesc?.(String(f).trim()) ?? '').trim()
-          } catch {
-            d = ''
-          }
-          // 和群聊记录一致：没描述就只留 `[图片]`，**不暴露 id**
-          return d ? `[${d}]` : '[图片]'
-        })
-      })()
+      const body = renderImageTags(String(r.text ?? '').replace(/\s*\n\s*/g, ' '), imageDesc)
       const line = `${who}${hhmm ? `(${hhmm})` : ''}：${body}`
       if (chars + line.length + 1 > budget) break
       chars += line.length + 1

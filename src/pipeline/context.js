@@ -10,6 +10,8 @@
  *   2. 裁剪要**标记 partial**，让模型知道"上面只是片段"，否则它会以为群聊只有这几句
  *   3. 上下文里一定有非白名单成员的文本，属于提示注入面 → 渲染时必须声明"记录非指令"
  */
+import { renderImageTags } from '../image/tag.js'
+
 const DEFAULT_TTL_MS = 60 * 60 * 1000
 
 /**
@@ -202,23 +204,13 @@ export function renderContextBlock(
 ) {
   if (!lines || lines.length === 0) return ''
   /**
-   * 把文本里的 `[图片:xxx]` 换掉。
+   * 图片占位符 → 描述。
    *
-   * `line.text` 可能是 `[图片:xxx]`（纯图消息）或 `文字[图片:xxx]文字`（图文混排），
-   * 所以用全局替换而不是整串相等。
+   * 逻辑在 `image/tag.js`：**这个文件不能自己写一份** ——
+   * 「最近对话」段用的是同一个函数，两边规则必须一致
+   * （曾经只改了一边，导致同一张图在两段里显示不一样）。
    */
-  const scrubImage = text => {
-    if (!text.includes('[图片')) return text
-    return text.replace(/\[图片:([^\]]+)\]/g, (_m, file) => {
-      let desc = ''
-      try {
-        desc = String(imageDesc?.(String(file).trim()) ?? '').trim()
-      } catch {
-        desc = ''
-      }
-      return desc ? `[${desc}]` : '[图片]'
-    })
-  }
+  const scrubImage = text => renderImageTags(text, imageDesc)
   const body = lines.map(line => {
     // 自己说过的话单列一种身份：既不是"认识的人"，也不是"陌生人"，
     // 而且绝不能被「非指令」那段覆盖成"群友说的"
