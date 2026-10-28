@@ -211,6 +211,53 @@ export class Store {
       .run(state, chatKey, qqMsgId)
   }
 
+  /**
+   * **按 QQ 消息 id 反查原文** —— 用于"这条在回复哪一句"。
+   *
+   * 入站的 `qq_msg_id` 就是 QQ 的 message_id，`reply` 段里的 id 能直接对上。
+   * 出站的消息**发出去后会回填真实 id**（见 `replaceQqMsgId`），所以
+   * "用户回复你发的图"也能查到。
+   *
+   * @param {string} chatKey
+   * @param {string} qqMsgId
+   * @returns {{ direction: string, sender_name: string, text: string, ts: number }|null}
+   */
+  messageByQqId(chatKey, qqMsgId) {
+    if (!chatKey || !qqMsgId) return null
+    try {
+      const r = this.db
+        .prepare(
+          'select direction, sender_name, text, ts from messages where chat_key = ? and qq_msg_id = ? limit 1',
+        )
+        .get(String(chatKey), String(qqMsgId))
+      return r ?? null
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * **把自造的 id 换成 QQ 返回的真实 id。**
+   *
+   * 出站消息落库用的是 `tool:<ts>:<n>` / `out:<ts>:<n>:<i>` —— 那是我们自己的
+   * 顺序号，**QQ 不认识**。于是用户长按一条回复时，`reply` 带的是真实 id，
+   * 而我们库里只有自造 id，**永远查不到"他回复的是哪一句"**。
+   *
+   * 现在发送成功后有真实 id 了，就地替换。
+   * `unique(chat_key, qq_msg_id)` 可能冲突（极少见），失败就保持原样。
+   */
+  replaceQqMsgId(chatKey, oldId, newId) {
+    if (!chatKey || !oldId || !newId || String(oldId) === String(newId)) return false
+    try {
+      const res = this.db
+        .prepare('update messages set qq_msg_id = ? where chat_key = ? and qq_msg_id = ?')
+        .run(String(newId), String(chatKey), String(oldId))
+      return Number(res.changes) > 0
+    } catch {
+      return false
+    }
+  }
+
   upsertChat({ chatKey, kind, chatId, title = '', mode = 'chat', preset = 'qq-chat', sessionId = '', status = 'active' }) {
     const now = Date.now()
     this.db

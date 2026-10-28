@@ -129,12 +129,19 @@ export class Outbox {
 
   async deliver(item) {
     try {
+      /**
+       * **接住发送返回值**（里面有 QQ 的 `message_id`）。
+       *
+       * 早先这里直接 `await`，返回的 `{ data: { message_id } }` 被丢掉 ——
+       * 于是库里永远只有我们自造的 `tool:<ts>:<n>`，
+       * **用户长按回复时 `reply` 段带的真实 id 在库中查不到**。
+       */
       if (Array.isArray(item.segments) && item.segments.length) {
         if (typeof this.sendSegments !== 'function') throw new Error('出站队列不支持消息段')
-        await this.sendSegments(item.chatKey, item.segments)
+        item.sentResult = await this.sendSegments(item.chatKey, item.segments)
       } else {
         // 把 meta 一起传下去：`replyTo` 这类发送期参数在它里面
-        await this.send(item.chatKey, item.text, item.meta)
+        item.sentResult = await this.send(item.chatKey, item.text, item.meta)
       }
       this.log('debug', `qdash-neo: 出站成功 ${item.chatKey} #${item.id}`)
       this.onSent?.(item)

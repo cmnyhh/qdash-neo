@@ -6,6 +6,7 @@
  */
 
 import { renderContextBlock } from '../pipeline/context.js'
+import { renderImageTags } from '../image/tag.js'
 
 /**
  * @typedef {object} Inbound
@@ -110,6 +111,18 @@ export function normalizeEvent(raw, { selfId = '' } = {}) {
     .filter(s => s && s.type === 'at')
     .map(s => String(s.data?.qq ?? '').trim())
     .filter(q => q && q !== self)
+  /**
+   * **引用回复的目标消息 id（`reply` 段）。**
+   *
+   * 早先完全没解析这个段 —— 于是「用户长按一条消息回复」在 prompt 里
+   * 和普通发言一模一样，模型不知道他在针对哪句话。
+   *
+   * 只取 id，内容由 service 层去查（那里才拿得到 store）：
+   * 查到就渲染成 `（回复「那句话」）`，查不到就退化成 `（回复了一条消息）`。
+   */
+  const replySeg = segments.find(s => s && s.type === 'reply')
+  const replyTo = String(replySeg?.data?.id ?? '').trim()
+
   const hasImage = segments.some(s => s && s.type === 'image')
   /**
    * 图片的文件标识。
@@ -145,6 +158,8 @@ export function normalizeEvent(raw, { selfId = '' } = {}) {
     atMe,
     /** 这条消息还 @ 了哪些人（不含自己）—— 用的是"没在叫我"这个信号 */
     atTargets,
+    /** 引用回复的目标消息 id（`reply` 段）；内容是 service 层查出来塞进 `replyText` 的 */
+    replyTo,
     hasImage,
     imageFile,
     imageUrl,
@@ -452,6 +467,27 @@ export function renderPrompt(
     '发不发看你想让这句话听起来是什么样，**不用刻意省**。'
 
   const body = ev.text || (ev.hasImage ? imageTag(ev) : '')
+
+  /**
+   * **当前消息 / 私聊正文的图片替换：没描述时保留 id。**
+   *
+   * 和历史记录的区别是刻意的：
+   *
+   *   历史（`renderContextBlock`）  没描述 → `[图片]`，**不带 id**
+   *                                 让模型没参数可传，就不会去重读旧图
+   *   当前消息（这里）            没描述 → `[图片:X.jpg]`，**保留 id**
+   *                                 模型要靠它指定 `qq_get_image({ file })`
+   *
+   * 早先这里根本没做替换，模型直接看到裸 id；而测试又要求"带 id"，
+   * 所以只能靠"有描述就换、没描述就留"来同时满足两边。
+   *
+   * 定义在这个位置：私聊分支（下面）比 `one()` 先用它。
+   */
+  const currentImageText = raw =>
+    String(raw ?? '').replace(/\[图片:([^\]]+)\]/g, (m, file) => {
+      const d = typeof contextImageDesc === 'function' ? contextImageDesc(file) : ''
+      return d ? `[${d}]` : m
+    })
   /**
    * 私聊：没有群聊记录，但**有角色、也有长期记忆**。
    *
@@ -465,12 +501,25 @@ export function renderPrompt(
      * 合成一段交出去，让它回一条，而不是三条。
      */
     const plines = Array.isArray(batch) && batch.length ? batch : [ev]
-    const pbody =
+    const pbodyRaw =
       plines.length > 1
         ? `【本次消息｜对方连着发了这 ${plines.length} 条，当成一口气说的话回应】\n${plines
             .map(it => String(it.text || (it.hasImage ? imageTag(it) : '')).replace(/\s*\n\s*/g, ' ⏎ '))
             .join('\n')}`
         : body
+    /**
+     * **私聊这条路径漏了图片替换 —— 同一类 bug 的第四次。**
+     *
+     * `body` 是 `ev.text || imageTag(ev)`，而 `imageTag` 返回 `[图片:X.jpg]`（带 id）。
+     * 群聊那边走 `renderContextBlock({ imageDesc })` 会把它换成描述，
+     * **私聊直接把这个字符串拼进去了**，没人替换 → 模型看到 `[图片:X.jpg]`
+     * 或者降级后的 `[图片]`。
+     *
+     * 前三次分别是：群聊记录漏 → 最近对话漏 → `renderPrompt` 二次渲染漏。
+     * 这次是第四个入口。**只要还有"自己拼 text"的地方，就会再漏一次**，
+     * 所以这里直接复用 `renderImageTags`，不再各写一份。
+     */
+    const pbody = currentImageText(pbodyRaw)
     /**
      * 私聊也要**说清场景**。
      *
@@ -559,7 +608,19 @@ export function renderPrompt(
           ? `（${atNames}，不是在叫你）`
           : `（只 @ 了 ${others.join(' ')}，没说话，不是在叫你）`
         : ''
-    const text = String(it.text || (it.hasImage ? imageTag(it) : '')).replace(/\s*\n\s*/g, ' ⏎ ')
+    /**
+     * **`[图片:X.jpg]` 必须换成描述，这里也算一个入口。**
+     *
+     * 前四个入口分别是：群聊记录、最近对话、`renderPrompt` 二次渲染、私聊正文。
+     * 这是第五个 —— **当前消息本身**。它不走 `renderContextBlock`，
+     * 所以那边的 `imageDesc` 管不到，模型直接看到 `[图片:XYZ.jpg]`。
+     *
+     * **但降级规则和历史相反**：历史里没描述就降级成 `[图片]`（不带 id，
+     * 免得模型去重读旧图、白烧视觉 token）；**当前消息没描述必须留着 id**，
+     * 模型要靠它指定 `qq_get_image({ file })` 读哪一张。
+     */
+    const rawText = String(it.text || (it.hasImage ? imageTag(it) : '')).replace(/\s*\n\s*/g, ' ⏎ ')
+    const text = currentImageText(rawText)
     /**
      * 群聊里带消息 ID，模型可以用 `qq_send_message({ reply_to })` 指定回哪一条。
      *
@@ -578,7 +639,24 @@ export function renderPrompt(
      * `：${text}`，就会得到 `甲(888)（@888，不是在叫你）：` 后面空着 ——
      * 看着像被截断。没正文就把冒号一起去掉，`@` 标记本身已经说明了全部内容。
      */
-    const head = id ? `[#${id}] ${who}${at}` : `${who}${at}`
+    /**
+     * **引用回复要说清"在回哪句"。**
+     *
+     * 用户长按一条消息回复，`reply` 段里带着那条的 id。不渲染的话，
+     * 这条在 prompt 里和普通发言完全一样 —— 模型不知道他在针对什么，
+     * 尤其当被回复的是**一张图**时（正文只有"可爱捏"，指代完全丢失）。
+     *
+     * `replyText` 是 service 层按 id 查出来的原文；查不到就退化成
+     * "回复了一条消息"，至少让模型知道这是个回复。
+     */
+    // 回复里也可能是一张图（`[图片:X.jpg]`），同样要换成描述再截断
+    const replyText = currentImageText(String(it.replyText ?? '').trim())
+    const reply = it.replyTo
+      ? replyText
+        ? `（回复「${replyText.length > 24 ? `${replyText.slice(0, 24)}…` : replyText}」）`
+        : '（回复了一条消息）'
+      : ''
+    const head = id ? `[#${id}] ${who}${at}${reply}` : `${who}${at}${reply}`
     return text ? `${head}：${text}` : head
   }
   /**

@@ -3000,6 +3000,22 @@ export class QdashNeoService {
       this.log('debug', `qdash-neo: 本次无可注入记忆 ${chatKey}（库里有数据但都被窗口/预算排除了）`)
     }
 
+    /**
+     * **把"这条在回复哪一句"查出来。**
+     *
+     * `reply` 段里只有 id，原文要在这里查 —— `normalize.js` 拿不到 `store`。
+     * 查到就渲染成 `（回复「那句话」）`，尤其当被回复的是**图片**时：
+     * 用户只打了「可爱捏」，没有这一句就完全不知道指向什么。
+     *
+     * 一批里可能不止一条是回复，所以逐条查。
+     */
+    const replyTargets = new Set([ev, ...(Array.isArray(batch) ? batch : [])].filter(Boolean))
+    for (const it of replyTargets) {
+      if (!it?.replyTo) continue
+      const hit = this.store?.messageByQqId?.(it.chatKey, it.replyTo)
+      it.replyText = String(hit?.text ?? '')
+    }
+
     // 人设不限群：私聊也需要「我是谁」
     const personaBlock = this.personaOf()?.card(chatKey) ?? ''
     const prompt = renderPrompt(ev, {
@@ -3259,7 +3275,50 @@ export class QdashNeoService {
       perChatIntervalMs: Number.isFinite(oc.intervalMs) ? oc.intervalMs : 1200,
       onSent: item => {
         this.safeState(item.chatKey, item.meta?.qqMsgId, 'sent')
-        this.settleReply(item, true)
+        /**
+         * **把自造 id 换成 QQ 的真实 id。**
+         *
+         * 落库用的是 `tool:<ts>:<n>` / `out:<ts>:<n>:<i>`，QQ 不认识。
+         * 而用户长按一条消息回复时，`reply` 段带的是**真实 id** ——
+         * 不替换就永远查不到"他回复的是哪一句"。
+         *
+         * 必须在 `safeState` 之后做：那一步还在用旧 id。
+         */
+        const realId = item.sentResult?.data?.message_id
+        if (realId != null && item.meta?.qqMsgId) {
+          try {
+            this.store?.replaceQqMsgId?.(item.chatKey, item.meta.qqMsgId, String(realId))
+          } catch {
+            /* 冲突就保持原样，不影响发送 */
+          }
+        }
+        /**
+         * **有 `replyId` = 模型回复的一片**，交给 `settleReply` 统一结算 ——
+         * 它要等所有片都成功后才回写一次（800 字拆 5 片不能写 5 条）。
+         */
+        if (item.meta?.replyId) {
+          this.settleReply(item, true)
+          return
+        }
+        /**
+         * **没有 `replyId` = 工具/插件直接发的一条**（图片、表情、语音、
+         * 单条文本），**也必须回写上下文**。
+         *
+         * 踩过的坑：模型发了一张表情包，用户隔一轮 @ 它说「可爱捏」，
+         * 它一脸茫然问"可爱是夸我还是夸我刚才那张图" —— 因为
+         * `settleReply` 第一行就是 `if (!replyId) return`，
+         * **工具直接发的东西一条都没进过上下文**。
+         *
+         * 表现成"它不记得自己发过图"，而且只有追问时才暴露。
+         */
+        const label = String(item.text ?? '').trim()
+        if (label) {
+          this.rememberOutbound({
+            chatKey: item.chatKey,
+            text: label,
+            meta: { qqMsgId: item.meta?.qqMsgId ?? '' },
+          })
+        }
       },
       onDead: item => {
         this.safeState(item.chatKey, item.meta?.qqMsgId, 'dead')
@@ -3534,7 +3593,32 @@ export class QdashNeoService {
   enqueueSegmentsOut(chatKey, segments, meta = {}) {
     if (!Array.isArray(segments) || !segments.length) return
     const qqMsgId = meta.qqMsgId ?? `seg:${Date.now()}:${++this.outSeq}`
-    const label = String(meta.text ?? '').trim() || '[非文本消息]'
+    /**
+     * **没传 label 时按段类型自己推断。**
+     *
+     * 这个 label 有两个用途：控制台列表里显示什么，以及**回写上下文时
+     * 模型看到什么**。
+     *
+     * 原来兜底是死板的 `[非文本消息]` —— 模型读到这句话，**不知道自己
+     * 发的到底是图、表情还是语音**，于是用户说「可爱捏」时它只能反问
+     * "你夸的是我刚才那张图吗"。
+     *
+     * 推断比死板兜底准，而且所有调用方（工具、插件）都受益，不用各自记得传。
+     */
+    const autoLabel = (segments ?? [])
+      .map(s => {
+        if (!s || typeof s !== 'object') return ''
+        if (s.type === 'text') return String(s.data?.text ?? '')
+        if (s.type === 'image') return '[图片]'
+        if (s.type === 'record') return '[语音]'
+        if (s.type === 'face' || s.type === 'mface') return '[表情]'
+        if (s.type === 'video') return '[视频]'
+        if (s.type === 'json' || s.type === 'ark' || s.type === 'share') return '[卡片]'
+        return ''
+      })
+      .filter(Boolean)
+      .join('')
+    const label = String(meta.text ?? '').trim() || autoLabel || '[非文本消息]'
     this.safeInsert({ chatKey, qqMsgId, direction: 'out', text: label, state: 'queued' })
     this.outbox?.enqueueSegments(chatKey, segments, { ...meta, qqMsgId, text: label })
   }
