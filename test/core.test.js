@@ -12,6 +12,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { test } from 'node:test'
 
 import { SILENT_MARKER, parseLaterMarker } from '../src/consts.js'
+import { renderImageTags } from '../src/image/tag.js'
 import { Memory } from '../src/memory/index.js'
 import { normalizeEvent, parseCqString, renderPrompt } from '../src/onebot/normalize.js'
 import { Persona } from '../src/persona/index.js'
@@ -915,4 +916,84 @@ test('群聊标题：有人 @ 时命令式，没人 @ 时不命令它回应', ()
   assert.doesNotMatch(noAt, /请回应这条/, '「请回应这条」是指令，会压过"自己判断"那句许可')
   assert.match(noAt, /接不接看你自己的状态/, '没人叫时要给判断维度')
   assert.match(noAt, /合不合时宜/, '维度是群友的（想不想、合不合时宜），不是助手的（有没有用）')
+})
+
+/* ---------------------------------------------------------------- 图片描述 */
+
+/**
+ * **这组测试是为了防止同一个 bug 第四次发生。**
+ *
+ * 图片描述链路坏过三次，每次表现一样（历史里只剩 `[图片]`），
+ * 但断点不同：
+ *
+ *   1. 只给「群聊记录」加了替换，`renderRecent`（最近对话）漏了
+ *   2. 两处都加了，但 `renderPrompt` 内部**又渲染了一遍**且没传 `imageDesc`
+ *   3. 修了上面两处，但两段各写一份替换逻辑，改一边漏一边
+ *
+ * 三次都是靠人肉看 prompt 发现的 —— 因为**没有一条测试断言过它**。
+ * 所以这里断言的是**最终输出**，不是中间环节。
+ */
+
+test('图片占位：有描述换成描述，没描述降级且不泄露 id', () => {
+  assert.equal(
+    renderImageTags('看这个[图片:X.jpg]哈哈', () => '柴犬趴在键盘上'),
+    '看这个[柴犬趴在键盘上]哈哈',
+    '图文混排也要能替换',
+  )
+
+  const fallback = renderImageTags('[图片:X.jpg]', () => '')
+  assert.equal(fallback, '[图片]', '没描述就是光秃秃的 [图片]')
+  assert.equal(
+    fallback.includes('X.jpg'),
+    false,
+    '**降级时绝不能留下 id** —— 留着模型就会去 qq_get_image 重读一遍旧图',
+  )
+})
+
+test('图片占位：不含图片的文本原样返回', () => {
+  assert.equal(renderImageTags('普通一句话', () => '不该被调用'), '普通一句话')
+  assert.equal(renderImageTags('', () => 'x'), '')
+  assert.equal(renderImageTags(null, () => 'x'), '')
+})
+
+test('图片占位：查描述抛错也不炸，降级成 [图片]', () => {
+  const boom = () => {
+    throw new Error('数据库挂了')
+  }
+  assert.equal(
+    renderImageTags('[图片:Y.jpg]', boom),
+    '[图片]',
+    '渲染路径不能因为查描述失败而崩 —— 那会让整轮消息发不出去',
+  )
+})
+
+test('renderPrompt 必须把 contextImageDesc 传给上下文渲染（二次渲染那条路径）', () => {
+  const ev = {
+    kind: 'group',
+    chatKey: 'g:1',
+    groupId: '1',
+    userId: '1',
+    messageId: '2',
+    text: '看这张',
+    atMe: false,
+    hasImage: false,
+    ts: Date.now(),
+    segments: [],
+  }
+  const p = renderPrompt(ev, {
+    botName: '狐狐',
+    // `context` 传的是**原始数组**，`renderPrompt` 内部会自己再渲染一遍
+    context: [
+      { userId: '1', senderName: '甲', text: '[图片:AAA.jpg]', ts: Date.now(), direction: 'in' },
+    ],
+    contextImageDesc: f => (f === 'AAA.jpg' ? '橘猫托着下巴' : ''),
+    batch: [ev],
+  })
+
+  assert.match(p, /\[橘猫托着下巴\]/, '历史图片必须渲染成描述')
+  assert.equal(
+    p.includes('AAA.jpg'),
+    false,
+    '不能把 id 泄露给模型 —— 没有 id 它就不会去回看旧图',
+  )
 })

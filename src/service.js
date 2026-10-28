@@ -2330,21 +2330,23 @@ export class QdashNeoService {
   contextText(chatKey, messageIdOrIds, { beforeMessageId } = {}) {
     const ids = Array.isArray(messageIdOrIds) ? messageIdOrIds : [messageIdOrIds]
     const { lines, partial } = this.context.recent(chatKey, { excludeMessageIds: ids, beforeMessageId })
-    return {
-      text: renderContextBlock(lines, {
-        partial,
-        /**
-         * **历史图片只渲染描述，绝不带 id。**
-         *
-         * 有描述 → `[柴犬趴在键盘上]`；没有 → `[图片]`。
-         * 不带 id 是刻意的：模型没有参数可传，就不会去 `qq_get_image`
-         * 把旧图重新读一遍（视觉 token 是大头，而旧图对当下几乎无用）。
-         */
-        imageDesc: f => this.imageDescOf(f),
-      }),
-      lines,
+    const rendered = renderContextBlock(lines, {
       partial,
-    }
+      /**
+       * **历史图片只渲染描述，绝不带 id。**
+       *
+       * 有描述 → `[柴犬趴在键盘上]`；没有 → `[图片]`。
+       * 不带 id 是刻意的：模型没有参数可传，就不会去 `qq_get_image`
+       * 把旧图重新读一遍（视觉 token 是大头，而旧图对当下几乎无用）。
+       *
+       * **注意这里渲染的字符串只给判定器用** —— 模型那一侧的 prompt 由
+       * `renderPrompt` 自己拿 `lines` 重渲染，所以那边也必须传
+       * `contextImageDesc`，否则这条替换等于白做（踩过，见 normalize.js 的说明）。
+       */
+      imageDesc: f => this.imageDescOf(f),
+    })
+
+    return { text: rendered, lines, partial }
   }
 
   /**
@@ -2384,8 +2386,22 @@ export class QdashNeoService {
     const k = String(file ?? '').trim()
     if (!k) return ''
     try {
-      return String(this.store?.kvGet?.(`image:desc:${k}`) ?? '').trim()
-    } catch {
+      const v = String(this.store?.kvGet?.(`image:desc:${k}`) ?? '').trim()
+      /**
+       * **只在 miss 时打一条**。
+       *
+       * 命中是常态（历史里每张图每轮都要查一次），全打会把日志淹掉；
+       * 而 miss 才有信息量 —— 它意味着**这张图被模型看过、却没写描述**
+       * （`image_mark` 漏调），也正是"历史里只剩 `[图片]`"的直接原因。
+       *
+       * 用 `console.log` 而不是 `this.log('info')`：info 级在 DSH 里看不到，
+       * 而这条信号恰恰需要当场看见。频率低（只在没描述时触发），不会吵。
+       */
+      if (!v) console.log(`qdash-neo: 图无描述 file=${JSON.stringify(k.slice(0, 46))}`)
+      return v
+    } catch (err) {
+      // 查描述失败属于需要留痕的异常，走项目统一日志；渲染侧仍安全降级成 `[图片]`
+      this.log('warn', `qdash-neo: 查图片描述失败 file=${k.slice(0, 46)} msg=${err?.message}`)
       return ''
     }
   }
@@ -2533,6 +2549,12 @@ export class QdashNeoService {
     const prompt = renderPrompt(ev, {
       botName: this.botName(),
       context: isGroup ? ctxLines.lines : null,
+      /**
+       * **必须一起传**：`renderPrompt` 内部会用 `lines` 重新渲染一遍，
+       * 不传这个的话历史图片全部退化成 `[图片]` —— 而 `ctxLines.text`
+       * 那份（带描述的）只给判定器用，进不了 prompt。
+       */
+      contextImageDesc: f => this.imageDescOf(f),
       partial: ctxLines.partial,
       // 私聊也会攒批（`preparePrivateInbound`），所以不能按 isGroup 置空
       batch,

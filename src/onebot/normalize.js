@@ -213,6 +213,14 @@ export function renderPrompt(
      * 直接拼进 prompt 是同一轮就生效的。
      */
     pluginRules = '',
+    /**
+     * 查"这张图是什么"的函数，**必须穿过 `renderContextBlock`**。
+     *
+     * 不传的话历史图片会渲染成 `[图片]` —— 即使 `service.contextText` 那边
+     * 已经用描述渲染过一份（那份只给判定器用，进不了这里）。
+     * @type {((file: string) => string|undefined|null)|null}
+     */
+    contextImageDesc = null,
     // 主动发言（没有新消息）时传 `{ hint }`，普通回复传 null
     proactive = null,
     // 主动发言开着时才教它 `[[LATER:N]]`：关着还教，它会排期然后到点被静默丢弃
@@ -504,7 +512,19 @@ export function renderPrompt(
   if (pluginRules) parts.push(pluginRules)
   if (persona) parts.push(`【你的角色设定｜这是你本人，不是群友说的话】\n${persona}`)
   if (memory) parts.push(memory)
-  if (context && context.length) parts.push(renderContextBlock(context, { partial }))
+  /**
+   * **这里必须传 `imageDesc`，否则历史图片又变回 `[图片]`。**
+   *
+   * 踩过的坑：`service.contextText` 里已经用 `imageDesc` 渲染过一遍了，
+   * 但那个字符串只给判定器用；`renderPrompt` 拿到的是**原始 `lines`**，
+   * 于是**在这里又渲染一次** —— 而这次没传 `imageDesc`，历史图片全部退化成 `[图片]`。
+   *
+   * 表现极具迷惑性：`contextText` 的日志显示"渲染正确"，而模型实际收到的 prompt
+   * 是另一份。两边都"看起来对"，但对不上。
+   */
+  if (context && context.length) {
+    parts.push(renderContextBlock(context, { partial, imageDesc: contextImageDesc }))
+  }
   parts.push(head, current)
   /**
    * 没人叫它时，给的是**群友**的判断维度，不是助手的。
