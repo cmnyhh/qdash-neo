@@ -260,6 +260,29 @@ export async function createConfig() {
           .default(2)
           .description('每小时最多主动找几次话题（硬上限，防刷屏；0 = 不限）'),
       }).description('中时静默：群安静后自动闭嘴，期间可随机找话题（被 @ 仍会唤醒）'),
+
+      /**
+       * **版本更新检测。**
+       *
+       * **只检测，不安装。** 这个进程自己重启自己，正在处理的消息会丢；
+       * 新版有 bug 没有回滚；`pnpm install` 失败时依赖可能被删了一半 ——
+       * 比不更新更糟。而且 profile 里写的是 `^0.1.11`，一次 install 会顺带
+       * 升掉所有 `0.1.x`，你只想修一个插件，可能连带到别的。
+       *
+       * 所以这里只回答一个问题是：**现在跑的版本，和 npm 上的最新版差多少。**
+       * 装不装、什么时候装，由人决定。
+       */
+      updateCheck: Schema.object({
+        enabled: Schema.boolean()
+          .default(true)
+          .description('定期检查 npm 上有没有新版（只提示，不自动安装）'),
+        intervalHours: Schema.natural()
+          .default(6)
+          .description('每隔几小时查一次（启动后 30 秒会先查一次）'),
+        registry: Schema.string()
+          .default('https://registry.npmmirror.com')
+          .description('npm registry 地址。默认用国内镜像，比官方源快且稳定'),
+      }).description('版本更新检测：有新版时在日志里提示，不会自动安装'),
     }).description('准入策略'),
 
     /**

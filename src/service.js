@@ -18,6 +18,7 @@ import { localDay, summarizeDay } from './memory/daily.js'
 import { Memory } from './memory/index.js'
 import { OneBotClient } from './onebot/client.js'
 import { describeImage } from './image/describe.js'
+import { SELF_VERSION, checkUpdates } from './update/check.js'
 import { imageTag, normalizeEvent, renderPrompt } from './onebot/normalize.js'
 import { ReplyLedger } from './outbox/ledger.js'
 import { Outbox } from './outbox/queue.js'
@@ -164,6 +165,8 @@ export class QdashNeoService {
     this.idleTimers = new Map()
     /** 每个会话最近一小时的主动找话题次数：chatKey → { hour, n } */
     this.idleUsed = new Map()
+    /** 版本更新检测的定时器（`setInterval`，全局一个） */
+    this.updateTimer = null
     /**
      * 每个会话最近一张图的 file 标识：chatKey → file。
      *
@@ -905,6 +908,14 @@ export class QdashNeoService {
     this.startDailyLoop()
     // 群安静够久就进静默（默认关，`policy.idleSleep.enabled` 打开才生效）
     this.startIdleWatcher()
+    /**
+     * 版本检测。
+     *
+     * `applyConfig` 里也会调（配置热更新时启停），两边都是幂等的 ——
+     * 这里补上是因为**不能依赖"配置一定加载成功"**：`applyConfig` 抛异常时
+     * 这个功能会静默失效，而它恰恰是用来发现"版本不对"的。
+     */
+    this.startUpdateCheck()
   }
 
   /**
@@ -939,6 +950,8 @@ export class QdashNeoService {
     this.idleSweeper = null
     for (const t of this.idleTimers.values()) clearTimeout(t)
     this.idleTimers.clear()
+    if (this.updateTimer) clearInterval(this.updateTimer)
+    this.updateTimer = null
     return dropped
   }
 
@@ -2023,6 +2036,87 @@ export class QdashNeoService {
     this.laterTimers.set(chatKey, timer)
     this.log('info', `qdash-neo: ${chatKey} 排期 ${m} 分钟后重新评估${hint ? `（备忘：${hint}）` : ''}`)
     return at
+  }
+
+  /* ---------------- 版本更新检测 ---------------- */
+
+  /**
+   * 查一次 npm 上有没有新版。
+   *
+   * **只打日志，不安装。**
+   *
+   * 用 `console.log` 而不是 `this.log('info')`：后者在 DSH 里看不到，
+   * 而这条信息的意义就是"让人看见"。
+   */
+  async checkUpdatesOnce() {
+    const cfg = this.config?.policy?.updateCheck ?? {}
+    if (cfg.enabled === false) return
+    try {
+      const rows = await checkUpdates({
+        registry: cfg.registry,
+        selfVersion: SELF_VERSION,
+      })
+      if (!rows.length) return
+
+      const behind = rows.filter(r => r.behind)
+      if (!behind.length) {
+        /**
+         * **"都是最新"也要打一行。**
+         *
+         * 用 `this.log('debug')` 的话 DSH 里看不到 —— 于是"这个功能到底在不在跑"
+         * 永远无法确认。而它每 6 小时才一次，不算吵。
+         */
+        console.log(
+          `qdash-neo: 版本检查完成，${rows.length} 个包都是最新（` +
+            rows.map(r => `${r.name.replace('@cmnyhh/', '')}@${r.current}`).join(', ') +
+            '）',
+        )
+        return
+      }
+
+      /**
+       * 有新版时给**可直接复制**的命令。
+       *
+       * 不说"去控制台点升级"—— 这里没有那个按钮，说了等于让人自己猜。
+       */
+      console.log(
+        `qdash-neo: 发现 ${behind.length} 个包可更新\n` +
+          behind.map(r => `  ${r.name}  ${r.current} → ${r.latest}`).join('\n') +
+          '\n  更新方式（不会自动执行）：\n' +
+          '    cd /opt/dsh-home-official/profiles/web && pnpm install && systemctl restart dsh-web\n' +
+          '  注意：profile 里是 `^0.1.x`，一次 install 会升掉所有 0.1.x 版本。',
+      )
+      for (const r of behind) {
+        this.log('warn', `qdash-neo: ${r.name} 有新版本 ${r.current} → ${r.latest}`)
+      }
+    } catch (err) {
+      // 网络不通、镜像挂了 —— 都不该影响主流程
+      this.log('debug', `qdash-neo: 版本检查失败 msg=${err?.message}`)
+    }
+  }
+
+  /**
+   * 起版本巡检。
+   *
+   * 启动后 30 秒跑第一次（避开启动时的资源抢占），之后按配置间隔重复。
+   * 关闭时什么都不挂 —— 否则测试进程退不出去（和 `dailyTimer` 同一个道理）。
+   */
+  startUpdateCheck() {
+    const cfg = this.config?.policy?.updateCheck ?? {}
+    if (cfg.enabled === false || this.updateTimer) return
+    const hours = Number(cfg.intervalHours) > 0 ? Number(cfg.intervalHours) : 6
+
+    const first = setTimeout(() => {
+      this.checkUpdatesOnce().catch(() => {})
+    }, 30_000)
+    first.unref?.()
+
+    this.updateTimer = setInterval(() => {
+      this.checkUpdatesOnce().catch(() => {})
+    }, hours * 3_600_000)
+    this.updateTimer.unref?.()
+    // 用 console.log：`this.log('info')` 在 DSH 里看不到，"到底启没启动"就无从确认
+    console.log(`qdash-neo: 版本检测已启动（每 ${hours} 小时一次，30 秒后先查一遍）`)
   }
 
   /* ---------------- 中时静默（群安静） ---------------- */
@@ -3405,6 +3499,14 @@ export class QdashNeoService {
       this.idleSweeper = null
       for (const t of this.idleTimers.values()) clearTimeout(t)
       this.idleTimers.clear()
+    }
+
+    /** 版本检测：开了确保在跑，关了要真停 —— 否则改配置不生效 */
+    if (next.policy?.updateCheck?.enabled !== false) {
+      this.startUpdateCheck(next.policy?.updateCheck ?? {})
+    } else if (this.updateTimer) {
+      clearInterval(this.updateTimer)
+      this.updateTimer = null
     }
 
     this.gates?.applyConfig?.(next)
