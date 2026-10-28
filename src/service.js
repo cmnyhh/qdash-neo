@@ -472,7 +472,7 @@ export class QdashNeoService {
        * `news` 是 `com.tencent.structmsg` 的**通用图文卡片**：点开直接跳
        * `jumpUrl`，不经过任何小程序。样式朴素一点，但**能点**比好看重要。
        */
-      share: async ({ chatKey, kind = 'news', title = '', desc = '', cover = '', url = '' } = {}) => {
+      share: async ({ chatKey, kind = 'card', title = '', desc = '', cover = '', url = '' } = {}) => {
         const key = String(chatKey ?? '').trim()
         if (!key) throw new Error('card.share 需要 chatKey')
 
@@ -485,9 +485,75 @@ export class QdashNeoService {
         /** 落库给人看的标签：卡片本身读不出文字，界面上要有个东西认 */
         const label = `[${kind}] ${head || link}`
 
+        /**
+         * **走 `send_tuwen_ark`：协议端自己生成图文卡。**
+         *
+         * 这是四轮排查后唯一"能发出去、能显示、能点开"的路。其余三条全部死在
+         * `config.token` 签名上（算法在协议端内部，算不出也不该算）：
+         *
+         *   `get_mini_app_ark` + json 段
+         *       能发，但 `scene` 被锁死为 0 → 点开提示「应用内测中」
+         *   `get_mini_app_ark` + 改 scene=1036
+         *       token 对不上 → 直接拒发（retcode 100）
+         *   自拼 `structmsg`（无 config）
+         *       能发，但客户端判定「发送者版本过低」
+         *   自拼 `structmsg`（带 token）
+         *       验签失败 → 拒发
+         *   `share` 段
+         *       能发，但同样「发送者版本过低」
+         *
+         * 所以只能用协议端自己的入口 —— 它内部拿得到合法签名。
+         * 封面 `preview_url` 由调用方传（插件本来就有真实封面 URL）。
+         *
+         * `kind: 'miniapp'` 保留旧的小程序卡路径，仅供有内测权限时使用。
+         */
+        if (String(kind) !== 'miniapp') {
+          try {
+            const isGroup = key.startsWith('g:')
+            const id = Number(key.slice(2))
+            if (!Number.isFinite(id) || id <= 0) throw new Error(`chatKey 无法解析：${key}`)
+
+            await this.client.call('send_tuwen_ark', {
+              ...(isGroup ? { group_id: id } : { user_id: id }),
+              title: head || link,
+              desc: body,
+              summary: '[分享]',
+              preview_url: pic,
+              jump_url: link,
+            })
+
+            /**
+             * 落库记一条：卡片在库里读不出内容，只留个标签。
+             *
+             * 直接调 action 绕过了 outbox，所以这里手动补 —— 否则控制台的
+             * 消息记录里会缺这一条，看起来像"发了但没记录"。
+             */
+            this.safeInsert({
+              chatKey: key,
+              qqMsgId: `card:${Date.now()}:${++this.outSeq}`,
+              direction: 'out',
+              text: label,
+              state: 'sent',
+            })
+            return { ok: true, mode: 'card' }
+          } catch (err) {
+            /**
+             * **不能因为卡片失败就不发内容**：卡片是锦上添花，链接才是本体。
+             *
+             * 用 console.log 而不是 this.log：后者是 info 级，DSH 里看不到 ——
+             * 于是"为什么降级"永远查不出来。
+             */
+            console.log(`qdash-neo: 卡片不可用，降级为文本 ${key} msg=${err?.message}`)
+          }
+
+          this.enqueueOut(key, [head, body, link].filter(Boolean).join('\n'), { fromTool: 'card' })
+          return { ok: true, mode: 'text' }
+        }
+
+        // === kind: 'miniapp' —— 旧的小程序卡片（需要 B 站小程序内测权限）===
         try {
           const r = await this.client.call('get_mini_app_ark', {
-            type: String(kind),
+            type: 'bili',
             title: head,
             desc: body,
             picUrl: pic,
@@ -495,16 +561,19 @@ export class QdashNeoService {
           })
           /**
            * 取值兼容两种形状：
-           *
            *   - `client.call` 原样返回整个回包 → `r.data.data`
            *   - 某些实现/中间层会先解一层 → `r.data`
-           *
-           * 只认前者的话，`r.data.data` 是 undefined，会静默走降级 ——
-           * 表现出来就是"参数全对、卡片变成文字"，而日志里什么都没有
-           * （降级日志是 info 级，DSH 里看不到）。
            */
           const ark = r?.data?.data ?? (r?.app ? r : null) ?? r?.data ?? null
           if (ark && typeof ark === 'object') {
+            /**
+             * **不要改任何字段。**
+             *
+             * 尤其别动 `meta.detail_1.scene` —— 它不是"场景值设成官方那样就能过"，
+             * 而是 `config.token` 签名覆盖的内容之一。改了签名就对不上，
+             * 协议端直接 `retcode: 100` 拒发（实测过）。
+             * 同理别删 `miniappShareOrigin` / `miniappOpenRefer`。
+             */
             this.enqueueSegmentsOut(
               key,
               [{ type: 'json', data: { data: JSON.stringify(ark) } }],
@@ -513,18 +582,10 @@ export class QdashNeoService {
             return { ok: true, mode: 'card' }
           }
           console.log(
-            `qdash-neo: 卡片未生成（回包里没有 ark）${key} keys=${JSON.stringify(Object.keys(r ?? {}))}`,
+            `qdash-neo: 小程序卡未生成（回包里没有 ark）${key} keys=${JSON.stringify(Object.keys(r ?? {}))}`,
           )
         } catch (err) {
-          /**
-           * 换实现、没这个 action、签名失败 —— 都走降级。
-           *
-           * **不能因此失败**：卡片是锦上添花，链接才是内容。
-           *
-           * 用 console.log 而不是 this.log：后者是 info 级，
-           * DSH 里看不到 —— 于是"为什么降级"永远查不出来。
-           */
-          console.log(`qdash-neo: 卡片不可用，降级为文本 ${key} msg=${err?.message}`)
+          console.log(`qdash-neo: 小程序卡不可用，降级为文本 ${key} msg=${err?.message}`)
         }
 
         this.enqueueOut(key, [head, body, link].filter(Boolean).join('\n'), { fromTool: 'card' })

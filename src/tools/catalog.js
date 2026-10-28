@@ -172,7 +172,7 @@ export const QQ_TOOLS = [
       title: '标题',
       desc: '可选：一句话描述',
       cover: '可选：封面图地址',
-      kind: '卡片类型：news（默认，通用图文卡片，点开跳链接）或 bili（需内测权限，不要用）',
+      kind: '一般不用传。默认走协议端图文卡（有封面、能点开）。传 miniapp 才走小程序卡 —— 那个需要内测权限，点开会提示「应用内测中」，别用',
     },
     sideEffect: true,
   },

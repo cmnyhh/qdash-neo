@@ -652,7 +652,7 @@ export function createQqTools({
         if (!url) throw new Error('url 不能为空（卡片点开总得有地方去）')
         return card.share({
           chatKey,
-          kind: String(args?.kind ?? 'news').trim() || 'news',
+          kind: String(args?.kind ?? 'card').trim() || 'card',
           title: String(args?.title ?? '').trim(),
           desc: String(args?.desc ?? '').trim(),
           cover: String(args?.cover ?? '').trim(),
