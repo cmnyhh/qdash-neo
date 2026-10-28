@@ -1128,7 +1128,25 @@ export class QdashNeoService {
    *   **两者的退出条件不同**：`idle` 遇人说话就醒，`model` 不。
    */
   setSleep(chatKey, seconds, reason = 'model') {
-    const s = Math.min(this.sleepMax, Math.max(this.sleepMin, Math.round(Number(seconds) || this.sleepMin)))
+    const raw = Math.round(Number(seconds) || this.sleepMin)
+    /**
+     * **只有"模型自己要求"才夹到 `[minSeconds, maxSeconds]`。**
+     *
+     * `maxSeconds` 的语义是"模型最多能要求睡多久"，用来防它写
+     * `[[SLEEP:9999]]` 把自己永久藏起来。
+     *
+     * 而 `idle` 那档的时长来自 `policy.idleSleep.quietMinutes` ——
+     * **是用户配的"群安静多久算一段落"，和模型能睡多久毫无关系**。
+     *
+     * 之前两者共用一个夹取范围，于是默认配置下：
+     *
+     *     quietMinutes 120 分钟 → 7200 秒
+     *     Math.min(maxSeconds=600, 7200) = 600 秒 = 10 分钟
+     *
+     * **静默永远达不到配置的时长**，而且没有任何提示 —— 表现是
+     * "设了 2 小时，实际每 10 分钟又醒一次"。
+     */
+    const s = reason === 'idle' ? raw : Math.min(this.sleepMax, Math.max(this.sleepMin, raw))
     const until = Date.now() + s * 1000
     this.sleepUntil.set(chatKey, until)
     try {
