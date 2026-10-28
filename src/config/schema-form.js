@@ -90,12 +90,17 @@ export const FIELD_LABELS = {
    * `policy.sleep.*` 之前一个中文名都没有 —— 配置页显示成
    * `policy.sleep.shortSeconds`，用户根本认不出这是"安静一会儿"。
    */
-  'policy.sleep.enabled': '允许它自己想安静一会儿',
-  // 三个数：下限（也是全局地板）/ 随机上限 / 天花板。不再有独立的 minSeconds
-  'policy.sleep.shortMinSeconds': '安静下限（秒）',
-  'policy.sleep.shortMaxSeconds': '一般上限（秒）',
-  'policy.sleep.maxSeconds': '最长能安静多久（秒）',
-  'policy.sleep.maxConsecutive': '连续安静几次后不再允许',
+  'policy.sleep.enabled': '允许它自己静默',
+  /**
+   * **三个数要读起来像一个梯度**，而不是三个并列的孤立名词。
+   *
+   * 「安静」有歧义（听着像音量），用「静默」；
+   * 「一般上限」太含糊 —— 和下面的「最长」分不出层次。
+   */
+  'policy.sleep.shortMinSeconds': '静默下限（秒）',
+  'policy.sleep.shortMaxSeconds': '静默上限（秒）',
+  'policy.sleep.maxSeconds': '最长静默（秒）',
+  'policy.sleep.maxConsecutive': '连续静默几次后不再允许',
   'policy.idleSleep.enabled': '群安静后自动静默',
   'policy.idleSleep.afterMinutes': '安静多久算没人说话（分钟）',
   'policy.idleSleep.quietMinutes': '静默持续多久（分钟）',

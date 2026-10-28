@@ -177,7 +177,9 @@ export async function createConfig() {
          * 600 秒（10 分钟）是"在场但不吭声"的自然尺度：比一次对话间隔长，
          * 又不会长到错过群里真正的话题。
          */
-        maxSeconds: Schema.natural().default(600).description('沉睡时长上限（秒），超出会被夹到这个值'),
+        maxSeconds: Schema.natural()
+          .default(600)
+          .description('静默最长多久（秒）。模型自己写更大的数字时会被压到这里'),
         /**
          * **短期安静的时长范围（秒）。**
          *
@@ -197,10 +199,10 @@ export async function createConfig() {
          */
         shortMinSeconds: Schema.natural()
           .default(45)
-          .description('短期安静下限（秒）：模型写 [[SLEEP]] 时，时长在这个范围内随机'),
+          .description('模型写 [[SLEEP]] 不指定秒数时，在这个下限和上面的上限之间随机取一个'),
         shortMaxSeconds: Schema.natural()
           .default(120)
-          .description('短期安静上限（秒）。和下限一起构成随机区间'),
+          .description('随机区间的上端。这两个数决定"一般会静默多久"'),
         /**
          * **连续几次之后就不给"安静"这个选项了。**
          *
