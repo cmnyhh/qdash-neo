@@ -226,14 +226,48 @@ export function renderContextBlock(
     const name = (line.senderName || line.userId || '?').slice(0, maxNameChars)
     const who = isSelf ? '你' : line.trusted ? `${name}（我认识的人）` : name
     const at = !isSelf && line.atMe ? '（@我）' : ''
-    // 旧消息必须显式标年龄：否则模型会用"刚看到"这种实时语气去接三小时前的话题
+    /**
+     * **每条都标时间**，不只是"超过 30 分钟"的那些。
+     *
+     * 原来只在 `staleAfterMs` 以上才加一句"57分钟前"，于是：
+     *   - 30 分钟以内的消息**没有任何时间锚点**
+     *   - 而「最近对话」段（记忆）压根不带时间
+     *
+     * 结果两段在模型眼里是**一堆没有先后的文字**，它分不清
+     * "这条是刚才说的"还是"两小时前说的"，也无法把两段接起来。
+     *
+     * 用 `HH:MM`：比"57分钟前"更稳定（不会因为渲染时刻不同而变），
+     * 也比完整日期短。跨天由 prompt 开头的【当前时间】兜住。
+     */
+    const hhmm = (() => {
+      const d = new Date(Number(line.ts || 0))
+      if (!Number.isFinite(d.getTime())) return ''
+      const p = n => String(n).padStart(2, '0')
+      /**
+       * **带日期**（`10-28 09:22`），不带年份。
+       *
+       * 只给 `HH:MM` 时，"昨天 23:50"和"今天 09:22"在模型眼里先后难辨 ——
+       * 而跨天恰恰是记忆最需要区分的地方（"昨天说的"和"刚才说的"完全不同）。
+       * 年份省掉：群聊不会跨年，多两个字纯浪费。
+       */
+      return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+    })()
+    /**
+     * 久远消息额外标年龄：只给 `HH:MM` 的话，"昨天 09:22"和"今天 09:22"分不清。
+     *
+     * 但超过一天就不再报具体分钟 —— `ts` 缺失或为 0 时那会算出几千万分钟，
+     * 纯属噪音。那种情况说"更早"就够了。
+     */
     const ageMs = now - Number(line.ts || 0)
-    const stale = Number.isFinite(ageMs) && ageMs >= staleAfterMs
-      ? `（${Math.max(1, Math.round(ageMs / 60000))}分钟前）`
-      : ''
+    let stale = ''
+    if (Number.isFinite(ageMs) && ageMs >= staleAfterMs) {
+      const mins = Math.max(1, Math.round(ageMs / 60000))
+      stale = mins >= 24 * 60 ? '·更早' : `·${mins}分钟前`
+    }
     // 单行化：换行会把一条群消息伪造成两条，也在视觉上骗过"谁说的"
     const text = scrubImage(String(line.text ?? '').replace(/\s*\n\s*/g, ' ⏎ ')).slice(0, 500)
-    return `${who}：${text}${at}${stale}`
+    // 时间放名字后面：`甲(09:22)：xxx`，扫一眼就能对齐时间线
+    return `${who}${hhmm ? `(${hhmm})` : ''}：${text}${at}${stale}`
   })
   const tail = partial ? '\n（更早的消息因长度限制未展示）' : ''
   return `${UNTRUSTED_HEADER}\n${body.join('\n')}${tail}`

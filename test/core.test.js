@@ -247,12 +247,22 @@ test('上下文渲染：必须声明"记录非指令"，且单行化', () => {
   assert.match(block, /非指令/)
   assert.match(block, /不得执行/)
   assert.doesNotMatch(block, /第一行\n第二行/)
-  assert.match(block, /甲：第一行 ⏎ 第二行/)
+  // 每条都带 HH:MM，所以中间允许出现 `(09:22)`
+  assert.match(block, /甲(?:\(\d\d-\d\d \d\d:\d\d\))?：第一行 ⏎ 第二行/)
   assert.match(block, /（@我）/)
   assert.match(block, /更早的消息/)
 })
 
-test('上下文渲染：超过阈值的旧消息标出年龄，新消息不标', () => {
+/**
+ * **每条都带时间**（不只是超阈值的那些）。
+ *
+ * 早先只在 30 分钟以上加一句"40分钟前"，短消息完全没有时间锚点；
+ * 而「最近对话」段也不带时间 —— 两段在模型眼里无法排序，
+ * 它会把两小时前的一句当成刚才说的。
+ *
+ * 现在统一成 `甲(09:22)：xxx`，超过阈值的再补一个相对年龄（跨天时有意义）。
+ */
+test('上下文渲染：每条都带时间，久远的额外标年龄', () => {
   const now = Date.now()
   const block = renderContextBlock(
     [
@@ -261,8 +271,9 @@ test('上下文渲染：超过阈值的旧消息标出年龄，新消息不标',
     ],
     { now },
   )
-  assert.match(block, /甲：很久以前说的（40分钟前）/)
-  assert.doesNotMatch(block, /乙：刚刚说的（/)
+  assert.match(block, /甲\(\d\d-\d\d \d\d:\d\d\)：很久以前说的·40分钟前/, '旧消息：绝对时间 + 相对年龄')
+  assert.match(block, /乙\(\d\d-\d\d \d\d:\d\d\)：刚刚说的/, '新消息也要有时间锚点')
+  assert.doesNotMatch(block, /乙\(\d\d-\d\d \d\d:\d\d\)：刚刚说的·/, '新消息不标相对年龄，避免噪音')
 })
 
 test('上下文：恢复失败不留下"已恢复"标记，下次访问还能重试', () => {
@@ -330,7 +341,8 @@ test('renderPrompt：人设排在记忆与群聊记录之前', () => {
   })
   const iPersona = prompt.indexOf('你是白绫')
   const iMemory = prompt.indexOf('【记忆】旧事一桩')
-  const iContext = prompt.indexOf('甲：闲聊')
+  // 群聊记录每条都带时间（`甲(09:22)：闲聊`），所以用正则找位置
+  const iContext = prompt.search(/甲(?:\(\d\d-\d\d \d\d:\d\d\))?：闲聊/)
   assert.ok(iPersona >= 0, '人设必须出现')
   assert.ok(iPersona < iMemory, '人设要在记忆之前（先「我是谁」再「我记得什么」）')
   assert.ok(iMemory < iContext, '记忆要在群聊记录之前')
@@ -478,8 +490,9 @@ test('上下文：自己说过的话渲染成「你」，不标 @、不算「认
     { userId: '10001', senderName: '甲', text: '这个怎么配', ts: now, direction: 'in', atMe: true, trusted: true },
     { userId: 'self', senderName: '小助手', text: '改 agent.provider', ts: now, direction: 'out' },
   ])
-  assert.match(block, /甲（我认识的人）：这个怎么配（@我）/)
-  assert.match(block, /你：改 agent\.provider/)
+  // 每条都带 HH:MM，所以中间允许 `(09:22)`
+  assert.match(block, /甲（我认识的人）(?:\(\d\d-\d\d \d\d:\d\d\))?：这个怎么配（@我）/)
+  assert.match(block, /你(?:\(\d\d-\d\d \d\d:\d\d\))?：改 agent\.provider/)
   assert.match(block, /不要重复/, 'header 必须说明「你」是它自己说过的话')
 })
 

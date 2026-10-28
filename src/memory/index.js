@@ -297,7 +297,23 @@ export class Memory {
     for (let i = rows.length - 1; i >= 0; i--) {
       const r = rows[i]
       const who = r.direction === 'out' ? '你' : (r.senderName || r.userId || '?')
-      const line = `${who}：${String(r.text ?? '').replace(/\s*\n\s*/g, ' ')}`
+      /**
+       * **每条都带时间**，和「群聊记录」用同一种格式（`甲(09:22)：xxx`）。
+       *
+       * 两段本来是拼起来用的（这段补窗口之外、那段是窗口之内），
+       * 但只要有一边没有时间锚点，模型就无法判断它们之间的间隔 ——
+       * 它会把"两小时前的一句"当成"刚才说的"。
+       *
+       * `HH:MM` 而不是"57分钟前"：前者是**绝对时间**，跨段比较时才对得上；
+       * 相对时间每渲染一次就变一次，两段之间根本没法比。
+       */
+      const d = new Date(Number(r.ts || 0))
+      const hhmm = Number.isFinite(d.getTime())
+        ? // 带日期不带年份：跨天要能分清，跨年不用管（和「群聊记录」同一格式）
+          `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ` +
+          `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+        : ''
+      const line = `${who}${hhmm ? `(${hhmm})` : ''}：${String(r.text ?? '').replace(/\s*\n\s*/g, ' ')}`
       if (chars + line.length + 1 > budget) break
       chars += line.length + 1
       picked.push(line)

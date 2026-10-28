@@ -905,8 +905,13 @@ test('提示词：群聊记录里出现「你」，模型看得见自己说过�
 
     await feed(s.service, groupRaw({ id: 9822, ...MEMBERS[0], text: '那现在呢', at: true }))
     const prompt = s.deliveries[0].prompt
-    assert.match(prompt, /你：之前答过的/)
-    assert.doesNotMatch(prompt, /你：之前答过的[\s\S]*你：之前答过的/, '同一句不能重复注入')
+    // 群聊记录每条都带时间（`你(09:22)：之前答过的`）
+    assert.match(prompt, /你(?:\(\d\d-\d\d \d\d:\d\d\))?：之前答过的/)
+    assert.doesNotMatch(
+      prompt,
+      /你(?:\(\d\d-\d\d \d\d:\d\d\))?：之前答过的[\s\S]*你(?:\(\d\d-\d\d \d\d:\d\d\))?：之前答过的/,
+      '同一句不能重复注入',
+    )
   } finally {
     s.dispose()
   }
