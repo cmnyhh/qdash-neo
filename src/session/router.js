@@ -280,14 +280,24 @@ export class SessionRouter {
   /**
    * 投递一条消息。
    * @param {string} chatKey
-   * @param {string} text
+   * @param {string} text 完整 prompt
+   * @param {string} [dialog] 本次**真正由人发出的文本**（标题 + 消息行），给记忆层用
    */
-  async deliver(chatKey, text) {
+  async deliver(chatKey, text, dialog = '') {
     const agent = await this.ensure(chatKey)
     agent.followup(
       this.createUserMessage({
         content: [{ type: 'text', text }],
-        source: { kind: 'user' },
+        /**
+         * **`dialog` 是给记忆层的声明式标注**：本次真正由人发出的文本。
+         *
+         * 为什么不另发一条 `kind !== 'user'` 的消息：那样模型看到的 prompt
+         * 结构会变（约束/人设/动作指令的先后顺序是调过的），
+         * 而这个字段**对模型完全不可见**。
+         *
+         * 老插件不认这个字段，行为与加它之前一致。
+         */
+        source: typeof dialog === 'string' && dialog ? { kind: 'user', dialog } : { kind: 'user' },
       }),
     )
     return agent

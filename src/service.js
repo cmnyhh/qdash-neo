@@ -3165,7 +3165,18 @@ export class QdashNeoService {
 
     // 人设不限群：私聊也需要「我是谁」
     const personaBlock = this.personaOf()?.card(chatKey) ?? ''
+    /**
+     * **「本次真正由人发出的文本」，交给记忆侧。**
+     *
+     * `renderPrompt` 通过 `onDialog` 回调把它送出来 —— 而 `prompt` 本身
+     * 不受影响。拿不到（主动唤起 / 异常）就是空串，记忆层据此整轮跳过。
+     *
+     * 不在返回值里带，是为了不改 `renderPrompt` 的结构（返回值被文档、
+     * 测试多处引用），而这个值**只有记忆插件关心**。
+     */
+    let promptDialog = ''
     const prompt = renderPrompt(ev, {
+      onDialog: t => { promptDialog = t },
       botName: this.botName(),
       /**
        * **把全部别名交给 prompt。**
@@ -3307,7 +3318,7 @@ export class QdashNeoService {
      * 不在 agent 历史里 —— 重建后照样能看到前面聊了什么。
      */
     try {
-      await this.router.deliver(chatKey, prompt)
+      await this.router.deliver(chatKey, prompt, promptDialog)
 
       /**
        * **上下文大小由 `onUsage` 判断，这里只管轮数兜底。**
@@ -3355,7 +3366,7 @@ export class QdashNeoService {
         this.log('warn', `qdash-neo: ${chatKey} 会话历史超限，重建后重试一次`)
         await this.rebuildSession(chatKey, '上下文超限')
         try {
-          await this.router.deliver(chatKey, prompt)
+          await this.router.deliver(chatKey, prompt, promptDialog)
           // 重建后从头计轮数；token 那一路由下一轮 `onUsage` 重新回报
           this.turnCount.set(chatKey, 1)
           this.log('info', `qdash-neo: ${chatKey} 重建后投递成功`)

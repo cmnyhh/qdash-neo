@@ -393,8 +393,29 @@ export function renderPrompt(
     canSchedule = false,
     // 语音可用时才提"可以用语音说"：关着还提，等于让它去调一个必然报错的工具
     canSpeak = false,
+    /**
+     * **只回吐「本次真正由人发出的那段文本」**（标题 + 原始消息行）。
+     *
+     * 为什么不改返回值：调用方只有一处，但返回结构一改就要跟着改文档、
+     * 改测试里的期望；而这个值**只给记忆插件用**，跟 prompt 本身无关 ——
+     * 用回调传出去，最小侵入。
+     *
+     * 主动唤起（proactive）没有"对方说的话"，回吐空串 —— 记忆层据此整轮跳过。
+     * @type {((text: string) => void)|null}
+     */
+    onDialog = null,
   } = {},
 ) {
+  /**
+   * 把"人说的话"送出去。
+   *
+   * **剥掉 `[#123]`**：那是 `qq_send_message` 的 `reply_to` 用的传输引用，
+   * 对话本身没有它，记忆层不需要，留着省得它出现在事实里。
+   */
+  const emitDialog = text => {
+    if (typeof onDialog !== 'function') return
+    onDialog(String(text ?? '').replace(/(^|\n)\[#\d+\]\s*/g, '$1'))
+  }
   /**
    * 用户自定义的「系统要求」，**放最前面并声明优先于人设**。
    *
@@ -458,6 +479,8 @@ export function renderPrompt(
    */
   if (proactive) {
     const hint = String(proactive?.hint ?? '').trim()
+    // 主动唤起：没有新消息，"人说的话"就是空 —— 记忆层据此整轮跳过
+    emitDialog('')
     return [
       timeBlock,
       /**
@@ -654,6 +677,8 @@ export function renderPrompt(
      * 所以这里直接复用 `renderImageTags`，不再各写一份。
      */
     const pbody = currentImageText(pbodyRaw)
+    // 私聊的"人说的话"＝标题 + 原始消息行（和群聊同形状）
+    emitDialog(pbodyRaw)
     /**
      * 私聊也要**说清场景**。
      *
@@ -979,6 +1004,13 @@ export function renderPrompt(
   }
   // 和私聊一样，在**最后**再说一次发送方式：模型对结尾最敏感
   parts.push(REPLY_HINT)
+
+  /**
+   * 群聊的"人说的话"＝段标题 + 当前消息那几行。
+   *
+   * 和私聊同形状：记忆层看到的是"对方说了什么"，不是整段 prompt。
+   */
+  emitDialog([head, current].join('\n'))
 
   return parts.join('\n')
 }
