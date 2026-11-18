@@ -8,8 +8,13 @@
  * 插件就成了消息处理链的一环，那么"某个插件装坏导致所有消息不回"就只是时间问题。
  */
 
-/** 可用事件。新增时同步 docs，否则插件作者只能靠猜 */
-export const PLUGIN_EVENTS = ['message/inbound', 'message/dropped', 'turn/end']
+/**
+ * 可用事件。新增时同步 docs，否则插件作者只能靠猜。
+ *
+ * `message/outbound` 是**出站**（2026-11 加）：模型或插件把消息推进队列时触发。
+ * 它只带"要发什么"，不带"发成功没有" —— 见 `service.emitOutbound` 的说明。
+ */
+export const PLUGIN_EVENTS = ['message/inbound', 'message/dropped', 'turn/end', 'message/outbound']
 
 const EVENT_SET = new Set(PLUGIN_EVENTS)
 

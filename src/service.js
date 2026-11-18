@@ -3722,6 +3722,38 @@ export class QdashNeoService {
     }
   }
 
+  /**
+   * **通知插件：有一条出站消息要发了。**
+   *
+   * 只带"要发什么"，**不带"发成功没有"** —— 这是刻意的：
+   *
+   *   - 入队后内容就确定了，记这个是确定性的时刻
+   *   - 若等到真正发送成功，**死信重试会让同一内容 emit 多次**，
+   *     订阅方（比如跑团记录）里就会出现重复条目
+   *
+   * 分片也不合并：一条长回复被拆成 3 片就是 3 次 emit ——
+   * 记录本来就该逐条，合并了订阅方还得自己再拆一次。
+   *
+   * 只读旁听，不能阻断也不能改写。监听器抛错由 `PluginEvents` 吞掉并记 warn，
+   * 不影响消息本身发送。
+   *
+   * @param {{ chatKey: string, text: string, kind: 'text'|'segments',
+   *           from?: string, qqMsgId?: string }} p
+   *   `from` 是来源标记（`plugin:coc` / `card` / 工具名），空串表示内核自己发；
+   *   订阅方靠它区分"这条是模型说的还是插件发的"
+   */
+  emitOutbound({ chatKey, text, kind, from = '', qqMsgId = '' }) {
+    /** 没有订阅者时 `emit` 内部立刻返回，开销只有一次 Map 查找 */
+    this.pluginEvents?.emit('message/outbound', {
+      chatKey: String(chatKey ?? ''),
+      text: String(text ?? ''),
+      kind,
+      from: String(from ?? ''),
+      qqMsgId: String(qqMsgId ?? ''),
+      ts: Date.now(),
+    })
+  }
+
   /** 落库失败不该挡住消息流，但必须留痕 */
   /**
    * 出站文本的统一出口：**落库 + 入队**。
@@ -3768,6 +3800,12 @@ export class QdashNeoService {
         total: Number(meta.total) > 0 ? Number(meta.total) : 1,
       })
     }
+
+    /**
+     * **放在 enqueue 之前**：万一入队抛错，至少"打算发什么"已经被记下来了。
+     * 反过来放的话，一次入队失败会让这条内容在记录里凭空消失。
+     */
+    this.emitOutbound({ chatKey, text, kind: 'text', from: meta.fromTool, qqMsgId })
 
     this.outbox?.enqueue(chatKey, text, { ...meta, qqMsgId })
   }
@@ -3824,6 +3862,13 @@ export class QdashNeoService {
       text: label,
       state: 'queued',
     })
+    /**
+     * 段消息也发事件 —— 跑团记录要能看到"KP 发了张场景图"。
+     * `text` 用 `label`（`[图片]` / `[语音]` 这类），因为订阅方要的是人话，
+     * 不是段数组。
+     */
+    this.emitOutbound({ chatKey, text: label, kind: 'segments', from: meta.fromTool, qqMsgId })
+
     this.outbox?.enqueueSegments(chatKey, segments, { ...meta, qqMsgId, text: label })
   }
 
