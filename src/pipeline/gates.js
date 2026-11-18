@@ -184,10 +184,25 @@ export class Gates {
    * 这条语义变化写在 docs/qdash-neo/03-内核实现要点.md §2。
    *
    * @param {import('../onebot/normalize.js').Inbound} ev
-   * @param {{ requireMention?: boolean }} [opts] 默认按 `groupTrigger` 推导；测试可显式覆盖
+   * @param {{ requireMention?: boolean, bypassQuota?: boolean, bypassRate?: boolean }} [opts]
+   *   默认按 `groupTrigger` 推导；`bypass*` 由 `ctx.qdashNeo.gateBypass` 决定，见 `service.skipByChance`
    * @returns {{ ok: boolean, reason?: string, note?: string }}
    */
-  trigger(ev, { requireMention = this.groupTrigger === 'mention' } = {}) {
+  trigger(
+    ev,
+    {
+      requireMention = this.groupTrigger === 'mention',
+      /**
+       * **只豁免"频率类"闸门，不豁免"资格类"闸门。**
+       *
+       * 白名单 / 群开关 / 是否点名 —— 这些是"这个群、这个人能不能跟它说话"，
+       * 属于安全边界，跑团时也不能放开。
+       * 配额与 rate 只是"防刷屏"，跑团时每条都该有回应，可以临时关掉。
+       */
+      bypassQuota = false,
+      bypassRate = false,
+    } = {},
+  ) {
     const t = this.now()
 
     if (ev.kind === 'private') {
@@ -233,7 +248,7 @@ export class Gates {
           note: 'groupTrigger=all 未配群白名单时只回私聊白名单里的成员（加群白名单即可全群生效）',
         }
       }
-      if (!this.allowReply(ev.chatKey)) {
+      if (!bypassQuota && !this.allowReply(ev.chatKey)) {
         return {
           ok: false,
           reason: REASON.QUOTA_EXCEEDED,
@@ -242,7 +257,7 @@ export class Gates {
       }
     }
 
-    if (this.ratePerMinute > 0) {
+    if (!bypassRate && this.ratePerMinute > 0) {
       const hits = (this.passes.get(ev.chatKey) ?? []).filter(ts => t - ts < 60_000)
       if (hits.length >= this.ratePerMinute) {
         this.passes.set(ev.chatKey, hits)

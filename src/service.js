@@ -72,6 +72,16 @@ const PLUGIN_API_KEYS = new Set([
   'on',
   'onConfigChange',
   'openProactive',
+  /**
+   * **会话级"免频率拦截"登记**（2026-11 加）。
+   *
+   * 跑团、连麦这类场景里，玩家的每一句都该有回应，而配额（`groupReplyQuota`）
+   * 和 `ratePerMinute` 是为"防刷屏"设计的 —— 它们会把整段对话切碎。
+   *
+   * 插件用它声明"这个会话现在别按频率拦"，用完必须 `clear`。
+   * **只豁免频率闸门**，白名单 / 群开关 / 是否点名一概不动。
+   */
+  'gateBypassApi',
 ])
 
 /**
@@ -613,6 +623,71 @@ export class QdashNeoService {
     /** 订阅配置变更的插件回调（见 onConfigChange） */
     this.configListeners = new Set()
 
+    /**
+     * **会话级"免频率拦截"登记。**
+     *
+     * 跑团、连麦这类场景里，玩家每一句都该有回应，而配额（`groupReplyQuota`）
+     * 和 `ratePerMinute` 是防刷屏用的 —— 它们会把一段连续对话切成碎片。
+     *
+     * **为什么带 TTL**：插件可能忘了 clear（进程被杀、插件卸载、代码抛错）。
+     * 没有 TTL 的话，一次忘记收场的跑团会让那个群**永久**不受配额约束，
+     * 而这件事在控制台里完全看不出来。
+     *
+     * 用闭包而不是 `this.xxx`：对象字面量的方法简写里 `this` 指向那个对象，
+     * 不是 service —— 写成 `this.gateBypass.get(...)` 会静默拿到 undefined。
+     */
+    const bypass = new Map()
+
+    this.gateBypassApi = {
+      /**
+       * @param {string} chatKey
+       * @param {{ reason?: string, ttlMs?: number }} [opts]
+       *   `ttlMs` 默认 4 小时（一场团的上限），最小 10 分钟
+       * @returns {boolean}
+       */
+      set: (chatKey, { reason = '', ttlMs = 4 * 3600_000 } = {}) => {
+        const key = String(chatKey ?? '').trim()
+        if (!key) return false
+        const ttl = Math.max(10 * 60_000, Number(ttlMs) || 4 * 3600_000)
+        bypass.set(key, { reason: String(reason ?? ''), until: Date.now() + ttl })
+        log('info', `qdash-neo: 免频率拦截 ${key}（${reason || '未说明'}，${Math.round(ttl / 60_000)} 分钟）`)
+        return true
+      },
+
+      /** 收场时必须调，否则只能靠 TTL 自然过期 */
+      clear: chatKey => {
+        const key = String(chatKey ?? '').trim()
+        if (!key) return false
+        const had = bypass.delete(key)
+        if (had) log('info', `qdash-neo: 恢复频率拦截 ${key}`)
+        return had
+      },
+
+      /** @param {string} chatKey @returns {boolean} */
+      has: chatKey => {
+        const key = String(chatKey ?? '').trim()
+        if (!key) return false
+        const e = bypass.get(key)
+        if (!e) return false
+        if (Date.now() > e.until) {
+          bypass.delete(key)
+          return false
+        }
+        return true
+      },
+
+      /** 当前在豁免的会话（控制台排查用） */
+      list: () => {
+        const now = Date.now()
+        const out = []
+        for (const [chatKey, e] of bypass) {
+          if (now > e.until) continue
+          out.push({ chatKey, reason: e.reason, until: e.until })
+        }
+        return out
+      },
+    }
+
     this.pluginEvents = new PluginEvents({ log: this.log })
     this.on = (event, handler) => this.pluginEvents.on(event, handler)
 
@@ -695,6 +770,8 @@ export class QdashNeoService {
       'voice-send': true,
       'voice-hook': true,
       'judge-provider': true,
+      /** 按会话豁免配额与限流（`gateBypassApi`），只影响频率，不影响资格 */
+      'gate-bypass': true,
       /**
        * 插件能发分享卡片（`card.share`）。
        *
@@ -2544,6 +2621,21 @@ export class QdashNeoService {
   }
 
   /**
+   * 这个会话要不要豁免频率闸门。
+   *
+   * **只关频率，不关资格**：配额与 `ratePerMinute` 是防刷屏的，跑团时该关；
+   * 白名单、群开关、是否点名是"能不能跟它说话"，任何时候都不放开。
+   *
+   * @param {string} chatKey
+   * @returns {{ bypassQuota: boolean, bypassRate: boolean } | undefined}
+   *   返回 `undefined` 时 `gates.trigger` 用自己的默认值（行为与加这个之前一致）
+   */
+  #gateOpts(chatKey) {
+    if (!this.gateBypassApi?.has(chatKey)) return undefined
+    return { bypassQuota: true, bypassRate: true }
+  }
+
+  /**
    * 掷骰子，决定这一批要不要回。
    *
    * **被点名时不掷**。`@` 是明确的召唤，用概率把它挡掉在社交上说不通
@@ -2560,6 +2652,13 @@ export class QdashNeoService {
   skipByChance(ev, evs) {
     const batch = Array.isArray(evs) ? evs : [ev]
     if (ev?.atMe || batch.some(e => e?.atMe)) return false
+    /**
+     * **声明了免拦截的会话不掷这个骰子。**
+     *
+     * `replyChance` 是"防话痨"用的，默认 0.95 —— 也就是每 20 句里有一句
+     * 会被静默丢掉。跑团时丢的那一句就是"我检查书架没反应"。
+     */
+    if (this.gateBypassApi?.has(ev?.chatKey)) return false
 
     const gate = this.chanceGate()
     if (!gate) return false
@@ -2568,7 +2667,7 @@ export class QdashNeoService {
   }
 
   async openGroupReply(ev) {
-    const trg = this.gates.trigger(ev)
+    const trg = this.gates.trigger(ev, this.#gateOpts(ev?.chatKey))
     if (!trg.ok) {
       this.recordGate(ev, [ev], trg)
       return
@@ -2719,7 +2818,7 @@ export class QdashNeoService {
     // 按批刷而不是逐条刷：一次判定最多一次 SQL，成本可忽略。
     this.memoryOf()?.touch(chatKey, evs.map(e => e.text || '').join('\n'))
 
-    const trg = this.gates.trigger(rep)
+    const trg = this.gates.trigger(rep, this.#gateOpts(rep?.chatKey))
     if (!trg.ok) {
       this.recordGate(rep, evs, trg)
       return
